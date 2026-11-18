@@ -1,0 +1,57 @@
+name: Build, test and push multi-arch image
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      # Sul runner c'e' Docker: qui girano anche i test con PostgreSQL e Kafka veri, che in
+      # locale senza Docker vengono saltati.
+      - name: Test
+        run: |
+          chmod +x gradlew
+          ./gradlew test
+
+      - name: Build jar
+        run: ./gradlew bootJar -x test
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=$(grep '^version' build.gradle.kts | sed -E 's/version *= *\"(.*)\"/\1/')" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        if: github.event_name == 'push'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            christiand9699/metrology-service:latest
+            christiand9699/metrology-service:${{ steps.version.outputs.VERSION }}

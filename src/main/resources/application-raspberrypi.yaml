@@ -1,0 +1,13 @@
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://auth.christiandellisanti.uk/realms/measurestream
+
+  kafka:
+    bootstrap-servers: kafka:29092
+
+logging:
+  level:
+    it.polito.measurestream.metrology: DEBUG

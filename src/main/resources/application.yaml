@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: metrology-service
+  profiles:
+    active: ${OS:default}           # come sensor-manager: OS=raspberrypi sulla Pi
+
+  # Stessa istanza PostgreSQL di sensor-manager, ma schema e utente propri: il servizio non vede
+  # le tabelle di public, e quello che gli serve lo chiede per evento o per REST.
+  # URL, utente e password arrivano da SPRING_DATASOURCE_URL, _USERNAME e _PASSWORD.
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate            # lo schema lo modificano solo le migrazioni Flyway
+    properties:
+      hibernate.default_schema: metrology
+
+  flyway:
+    schemas: metrology
+    default-schema: metrology
+    # Lo schema lo crea una volta sola lo script in db/setup, con il suo proprietario. Se manca,
+    # l'avvio deve fallire: crearlo qui significherebbe crearlo con l'utente sbagliato.
+    create-schemas: false
+
+  servlet:
+    multipart:
+      max-file-size: 20MB           # un certificato PDF o un DCC firmato [S §5.8]
+      max-request-size: 20MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+server:
+  port: 8080

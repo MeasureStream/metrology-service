@@ -1,0 +1,3 @@
+# Al build dell'immagine serve solo il jar.
+*
+!build/libs/*.jar
