@@ -74,3 +74,14 @@ metrology:
     default-interval-days: 365
     # L'orizzonte entro cui un certificato in vigore risulta «in scadenza».
     expiring-horizon-days: 90
+  # Fase 4: promemoria dello scadenzario (90, 30 e 0 giorni) e avvisi di non conformita'.
+  # La posta parte solo se c'e' un server SMTP (spring.mail.host, per esempio SPRING_MAIL_HOST,
+  # con SPRING_MAIL_PORT, SPRING_MAIL_USERNAME e SPRING_MAIL_PASSWORD); senza, gli avvisi
+  # restano nel log e nell'interfaccia (badge e coda delle non conformita').
+  notifications:
+    # La casella del laboratorio; i clienti ricevono all'indirizzo dei membri della loro azienda.
+    lab-email: ${METROLOGY_LAB_EMAIL:}
+    from: ${METROLOGY_MAIL_FROM:metrology@localhost}
+  schedule:
+    # Il ricalcolo notturno delle scadenze (oltre a quello a ogni attivazione).
+    cron: "0 30 2 * * *"

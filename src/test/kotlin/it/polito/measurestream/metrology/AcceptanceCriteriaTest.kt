@@ -22,6 +22,12 @@ import it.polito.measurestream.metrology.companies.ClientCompany
 import it.polito.measurestream.metrology.companies.ClientCompanyMember
 import it.polito.measurestream.metrology.companies.ClientCompanyMemberRepository
 import it.polito.measurestream.metrology.companies.ClientCompanyRepository
+import it.polito.measurestream.metrology.control.NonconformityDecision
+import it.polito.measurestream.metrology.control.NonconformityRepository
+import it.polito.measurestream.metrology.control.NonconformityService
+import it.polito.measurestream.metrology.control.NonconformityState
+import it.polito.measurestream.metrology.control.NonconformityType
+import it.polito.measurestream.metrology.control.Notifier
 import it.polito.measurestream.metrology.documents.DocumentService
 import it.polito.measurestream.metrology.items.CalibratedItemRepository
 import it.polito.measurestream.metrology.items.ItemService
@@ -125,6 +131,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 	JobService::class,
 	SessionService::class,
 	EngineController::class,
+	NonconformityService::class,
+	Notifier::class,
 )
 class AcceptanceCriteriaTest {
 	companion object {
@@ -157,6 +165,7 @@ class AcceptanceCriteriaTest {
 	@Autowired lateinit var sessionService: SessionService
 	@Autowired lateinit var steps: SessionStepRepository
 	@Autowired lateinit var engine: EngineController
+	@Autowired lateinit var nonconformityRepository: NonconformityRepository
 
 	private val euid = 439041101L
 
@@ -364,16 +373,38 @@ class AcceptanceCriteriaTest {
 	}
 
 	@Test
-	fun `3_5 senza regolazione la bozza non porta una funzione nuova`() {
+	fun `3_5 senza regolazione la bozza attesta la funzione che resta in vigore`() {
+		val nominal = mapOf("type" to "steinhart_201", "steinhart_201" to "1.0 / (c[0] + c[1] * ln(4095.0 / x - 1.0)) - 273.15", "input" to listOf("x"), "c" to listOf(mapOf("id" to 0, "value" to 0.0032), mapOf("id" to 1, "value" to 0.00024)))
 		val (session, fitJob) = sessionWithJob(JobKind.SESSION_FIT)
-		jobs.apply(fitResult(fitJob, session))
+		jobs.apply(fitResult(fitJob, session, budget = mapOf("functionInForce" to nominal)))
 		val fit = results.findAllBySessionIdOrderByCreatedAtDesc(session.id).single()
 		login("anna", Roles.USER)
 		jobs.decide(fit.id, DecisionRequest("NO_ADJUSTMENT", "scelta del cliente"))
 
 		val draft = draftAfterDocuments(session)
-		assertNull(draft.function, "l'esemplare resta alla formula nominale, come prima")
+		assertEquals(nominal, draft.function, "la formula nominale del modello, come la valutava il motore: il certificato puo' entrare in vigore")
+		assertTrue(draft.function != fit.function, "non la funzione nuova del fit")
 		assertEquals(setOf("AS_FOUND"), draft.points.map { it.phase.name }.toSet())
+	}
+
+	@Test
+	fun `4_4 un as-found non conforme apre una non conformita' di strumento, la decisione la prende in carico`() {
+		val (session, fitJob) = sessionWithJob(JobKind.SESSION_FIT)
+		val nonConform =
+			ConformityResult(ConformityTarget.SPECIFICATION, SourceRef("sensor", 201, "2.2.0"), "guarded (PFA <= 2 %)", 0.5, 0.9, it.polito.measurestream.metrology.jobs.contract.Verdict.NON_CONFORM)
+		jobs.apply(fitResult(fitJob, session, conformity = listOf(nonConform)))
+		em.flush()
+		val nc = nonconformityRepository.findAll().single()
+		assertEquals(NonconformityType.INSTRUMENT, nc.type)
+		assertEquals(NonconformityState.OPEN, nc.state)
+		assertEquals(0.8, (nc.subject["worstError"] as Number).toDouble())
+
+		val fit = results.findAllBySessionIdOrderByCreatedAtDesc(session.id).single()
+		login("anna", Roles.USER)
+		jobs.decide(fit.id, DecisionRequest("ADJUST"))
+		val taken = nonconformityRepository.findById(nc.id).orElseThrow()
+		assertEquals(NonconformityDecision.ADJUST, taken.decision)
+		assertEquals(NonconformityState.ACKNOWLEDGED, taken.state, "resta da valutare l'impatto sui dati misurati")
 	}
 
 	@Test
@@ -447,7 +478,12 @@ class AcceptanceCriteriaTest {
 		return session to jobs.enqueue(kind, session, "anna")
 	}
 
-	private fun fitResult(job: it.polito.measurestream.metrology.sessions.CalibrationJobRecord, session: CalibrationSession): CalibrationResult {
+	private fun fitResult(
+		job: it.polito.measurestream.metrology.sessions.CalibrationJobRecord,
+		session: CalibrationSession,
+		budget: Map<String, Any?> = emptyMap(),
+		conformity: List<ConformityResult> = emptyList(),
+	): CalibrationResult {
 		val item = itemRepository.findByMuExtendedIdAndSensorIndex(euid, 0)!!
 		return CalibrationResult(
 			jobId = job.id,
@@ -466,6 +502,8 @@ class AcceptanceCriteriaTest {
 						covariance = listOf(listOf(0.01, 0.0), listOf(0.0, 1e-12)),
 						calibratedRange = CalibratedRange(-20.0, 40.0),
 						points = listOf(CalibrationPoint(Phase.AS_FOUND, 0, -20.0, -20.0, -19.2, 0.8)),
+						budget = budget,
+						conformity = conformity,
 						suggestedDecision = SuggestedDecision.ADJUST,
 					)
 				),

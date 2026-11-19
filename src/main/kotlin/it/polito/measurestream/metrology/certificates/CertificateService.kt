@@ -2,6 +2,7 @@ package it.polito.measurestream.metrology.certificates
 
 import it.polito.measurestream.metrology.activation.ActivationService
 import it.polito.measurestream.metrology.common.AuditService
+import it.polito.measurestream.metrology.control.ScheduleService
 import it.polito.measurestream.metrology.common.BadRequest
 import it.polito.measurestream.metrology.common.Caller
 import it.polito.measurestream.metrology.common.Conflict
@@ -22,6 +23,7 @@ import java.security.MessageDigest
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.UUID
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -55,6 +57,8 @@ class CertificateService(
 	private val policy: AccessPolicy,
 	private val audit: AuditService,
 	@Value("\${metrology.certificates.default-interval-days:365}") private val defaultIntervalDays: Long,
+	/** Lo scadenzario si ricalcola a ogni attivazione (PIANO_METROLOGIA 4.5). */
+	private val schedule: ObjectProvider<ScheduleService>,
 ) {
 	// ------------------------------------------------------------------ lettura
 
@@ -285,7 +289,9 @@ class CertificateService(
 		certificate.status = CertificateStatus.EFFECTIVE
 		certificate.effectiveFrom = from
 		audit.record("CERTIFICATE_EFFECTIVE", "certificate", id, after = snapshot(certificate))
-		return toDetail(repository.save(certificate), caller)
+		val saved = repository.save(certificate)
+		schedule.ifAvailable?.recompute(certificate.subjectType, certificate.subjectId)
+		return toDetail(saved, caller)
 	}
 
 	/** Invalida: il certificato non vale piu', e se era in vigore la taratura si revoca. */

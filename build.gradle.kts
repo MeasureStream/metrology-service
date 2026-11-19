@@ -30,6 +30,8 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-flyway")
 	implementation("org.flywaydb:flyway-database-postgresql")
 	implementation("org.springframework.boot:spring-boot-starter-kafka")
+	// Promemoria dello scadenzario e avvisi di non conformita' (fase 4): partono solo se spring.mail.host e' configurato.
+	implementation("org.springframework.boot:spring-boot-starter-mail")
 	implementation("tools.jackson.module:jackson-module-kotlin")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	// Firma e verifica dei certificati (passi 1.10 e 3.8): XMLDSig con Apache Santuario, come in

@@ -17,6 +17,7 @@ import it.polito.measurestream.metrology.common.BadRequest
 import it.polito.measurestream.metrology.common.Conflict
 import it.polito.measurestream.metrology.common.NotFound
 import it.polito.measurestream.metrology.companies.LabCompanyRepository
+import it.polito.measurestream.metrology.control.NonconformityService
 import it.polito.measurestream.metrology.items.CalibratedItemRepository
 import it.polito.measurestream.metrology.jobs.contract.CalibrationJob
 import it.polito.measurestream.metrology.jobs.contract.CalibrationResult
@@ -68,6 +69,7 @@ class JobService(
 	private val outbox: Outbox,
 	private val policy: AccessPolicy,
 	private val audit: AuditService,
+	private val nonconformities: NonconformityService,
 ) {
 	private val log = LoggerFactory.getLogger(JobService::class.java)
 
@@ -161,8 +163,41 @@ class JobService(
 					suggestedDecision = item.suggestedDecision.name,
 					adjustmentApplied = item.adjustmentApplied,
 				)
-			)
+			).also { saved -> if (result.kind == JobKind.SESSION_FIT) instrumentNonconformity(job, saved) }
 		}
+	}
+
+	/**
+	 * Un as-found non conforme alle specifiche del modello apre una non conformita' di strumento
+	 * (PIANO_METROLOGIA 4.4): i dati misurati dall'esemplare dall'ultima taratura sono sospetti, e
+	 * la decisione su regolare, riparare o ritirare la prende il laboratorio.
+	 */
+	private fun instrumentNonconformity(job: CalibrationJobRecord, record: CalibrationResultRecord) {
+		val conformity = record.conformity.orEmpty()
+		if (conformity.none { it["verdict"] == Verdict.NON_CONFORM.name }) return
+		val item = items.findById(record.calibratedItemId).orElse(null) ?: return
+		val found = record.points.orEmpty().filter { it["phase"] == PointPhase.AS_FOUND.name }
+		val worst = found.mapNotNull { (it["error"] as? Number)?.toDouble() }.maxByOrNull { kotlin.math.abs(it) }
+		val tolerance = conformity.firstNotNullOfOrNull { (it["tolerance"] as? Number)?.toDouble() }
+		val since = certificates.findAllBySubjectTypeAndSubjectIdAndStatus(SubjectType.ITEM, item.id, CertificateStatus.EFFECTIVE).firstOrNull()?.calibrationDate
+		nonconformities.openInstrument(
+			item,
+			mapOf(
+				"resultId" to record.id,
+				"jobId" to job.id.toString(),
+				"sessionId" to record.sessionId,
+				"muExtendedId" to item.muExtendedId,
+				"sensorIndex" to item.sensorIndex,
+				"worstError" to worst,
+				"tolerance" to tolerance,
+				"suspectSince" to since,
+				"points" to found,
+			),
+			"As-found fuori tolleranza: MU 0x%08X sensore %d (errore %s, tolleranza %s)".format(
+				item.muExtendedId, item.sensorIndex, worst?.let { "%.3g".format(it) } ?: "?", tolerance?.let { "%.3g".format(it) } ?: "?"
+			),
+			record.createdAt,
+		)
 	}
 
 	/**
@@ -195,6 +230,10 @@ class JobService(
 			val adjusted = fit.decision == "ADJUST"
 			val verification = verifications[item.id]
 			val current = certificates.findAllBySubjectTypeAndSubjectIdAndStatus(SubjectType.ITEM, item.id, CertificateStatus.EFFECTIVE).firstOrNull()
+			// Senza regolazione il certificato attesta la funzione che resta in vigore: quella del
+			// certificato precedente, o la formula nominale del modello come l'ha valutata il motore.
+			@Suppress("UNCHECKED_CAST")
+			val inForce = current?.function ?: verification?.function ?: (fit.budget?.get("functionInForce") as? Map<String, Any?>)
 			val docs = result.documents.filter { it.calibratedItemId == null || it.calibratedItemId == item.id }
 			val sequence = certificates.countByKind(CertificateKind.INTERNAL) + 1
 			val verdicts = (verification?.conformity ?: fit.conformity).orEmpty()
@@ -213,7 +252,7 @@ class JobService(
 					validUntil = (session.endedAt ?: OffsetDateTime.now()).plusDays(item.intervalOverrideDays?.toLong() ?: 365),
 					status = CertificateStatus.DRAFT,
 					source = CertificateSource.ENGINE,
-					function = if (adjusted) fit.function else current?.function,
+					function = if (adjusted) fit.function else inForce,
 					covariance = if (adjusted) fit.covariance else current?.covariance,
 					calibratedMin = if (adjusted) fit.calibratedMin else current?.calibratedMin,
 					calibratedMax = if (adjusted) fit.calibratedMax else current?.calibratedMax,
@@ -274,6 +313,7 @@ class JobService(
 		result.decidedBy = caller.sub
 		result.decidedAt = OffsetDateTime.now()
 		result.adjustmentApplied = decision == "ADJUST"
+		nonconformities.recordInstrumentDecision(result.calibratedItemId, result.id, decision, request.reason, caller.sub)
 		result.sessionId?.let { id ->
 			sessions.findById(id).ifPresent {
 				if (decision == "ADJUST") it.status = SessionStatus.ADJUSTED
