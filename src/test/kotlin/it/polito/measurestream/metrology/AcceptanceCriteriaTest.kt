@@ -441,6 +441,51 @@ class AcceptanceCriteriaTest {
 		sessionService.requestDocuments(session.id)
 	}
 
+	/* -------------------------------------------- passo 5.1: la rivalutazione all'indietro */
+
+	@Test
+	fun `5_1 un as-found fuori tolleranza chiede a sensor-manager di correggere il periodo precedente`() {
+		val previous = externalEffectiveCertificate("LAT-042-2025-0001")
+		em.flush()
+		val (session, fitJob) = sessionWithJob(JobKind.SESSION_FIT)
+		val nonConform =
+			ConformityResult(ConformityTarget.SPECIFICATION, SourceRef("sensor", 201, "2.2.0"), "guarded (PFA <= 2 %)", 0.5, 0.9, it.polito.measurestream.metrology.jobs.contract.Verdict.NON_CONFORM)
+		jobs.apply(fitResult(fitJob, session, conformity = listOf(nonConform)))
+		val fit = results.findAllBySessionIdOrderByCreatedAtDesc(session.id).single()
+		login("anna", Roles.USER)
+		jobs.decide(fit.id, DecisionRequest("ADJUST"))
+		jobs.apply(verificationResult(jobs.enqueue(JobKind.VERIFICATION, session, "anna")))
+		val xml = documents.store(dcc(), "application/xml", "dcc.xml", "DCC_XML", "cliente", "calibration-engine")
+		val pdf = documents.store(pdf(), "application/pdf", "cert.pdf", "CERTIFICATE_PDF", "cliente", "calibration-engine")
+		val docsJob = jobs.enqueue(JobKind.DOCUMENTS, session, "anna")
+		jobs.apply(
+			CalibrationResult(
+				jobId = docsJob.id,
+				kind = JobKind.DOCUMENTS,
+				status = JobStatus.DONE,
+				engineVersion = "test",
+				startedAt = Instant.now(),
+				finishedAt = Instant.now(),
+				documents = listOf(DocumentRef(xml.id, DocumentKind.DCC_XML, xml.sha256), DocumentRef(pdf.id, DocumentKind.CERTIFICATE_PDF, pdf.sha256)),
+			)
+		)
+		em.flush()
+		val draft = certificateRepository.findAll().single { it.kind == CertificateKind.INTERNAL }
+
+		login("bruno", Roles.USER)
+		certificates.approve(draft.id)
+		certificates.sign(draft.id)
+		certificates.makeEffective(draft.id)
+		em.flush()
+
+		val payload = outbox.findTop100BySentAtIsNullOrderByIdAsc().filter { it.topic == ActivationEvent.TOPIC }.last().payload!!
+		@Suppress("UNCHECKED_CAST")
+		val event = it.polito.measurestream.metrology.jobs.contract.ContractJson.mapper.readValue(payload, Map::class.java) as Map<String, Any?>
+		assertNotNull(event["asFoundAt"], "da quando vale gia' la funzione nuova (GAP)")
+		assertNotNull(event["driftFrom"], "as-found fuori tolleranza: la deriva si corregge dal certificato precedente (DRIFT)")
+		assertEquals(previous.id, certificateRepository.findById(previous.id).orElseThrow().id)
+	}
+
 	/* ------------------------------------------------------------------ supporto */
 
 	private fun externalEffectiveCertificate(number: String): it.polito.measurestream.metrology.certificates.CertificateDetailDTO {

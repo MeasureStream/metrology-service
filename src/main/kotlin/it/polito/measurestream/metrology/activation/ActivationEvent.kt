@@ -29,6 +29,10 @@ data class ActivationEvent(
 	val calibratedRange: ActivatedRange?,
 	val blockACrc: String? = null,
 	val fingerprint: String?,
+	/** Quando e' stato misurato l'as-found della funzione: da li' sensor-manager riconverte (GAP). */
+	val asFoundAt: OffsetDateTime? = null,
+	/** Solo con as-found fuori tolleranza: l'inizio della deriva da correggere (DRIFT, fase 5.1). */
+	val driftFrom: OffsetDateTime? = null,
 ) {
 	companion object {
 		const val TOPIC = "calibration-activated"
@@ -47,7 +51,7 @@ class ActivationService(
 	private val outbox: Outbox,
 	private val audit: AuditService,
 ) {
-	fun activate(certificate: Certificate, item: CalibratedItem, validFrom: OffsetDateTime) {
+	fun activate(certificate: Certificate, item: CalibratedItem, validFrom: OffsetDateTime, asFoundAt: OffsetDateTime? = null, driftFrom: OffsetDateTime? = null) {
 		val function = certificate.function ?: throw IllegalStateException("Certificato ${certificate.id} senza funzione")
 		val event =
 			ActivationEvent(
@@ -66,6 +70,8 @@ class ActivationService(
 						ActivatedRange(certificate.calibratedMin, certificate.calibratedMax, certificate.calibratedDsi)
 					else null,
 				fingerprint = certificate.fingerprint,
+				asFoundAt = asFoundAt,
+				driftFrom = driftFrom,
 			)
 		outbox.enqueue(ActivationEvent.TOPIC, ActivationEvent.keyOf(item), ContractJson.write(event))
 		audit.record("CALIBRATION_ACTIVATED", "calibrated_item", item.id, after = event)

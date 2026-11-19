@@ -3,6 +3,8 @@ package it.polito.measurestream.metrology.certificates
 import it.polito.measurestream.metrology.activation.ActivationService
 import it.polito.measurestream.metrology.common.AuditService
 import it.polito.measurestream.metrology.control.ScheduleService
+import it.polito.measurestream.metrology.sessions.CalibrationResultRepository
+import it.polito.measurestream.metrology.sessions.CalibrationSessionRepository
 import it.polito.measurestream.metrology.common.BadRequest
 import it.polito.measurestream.metrology.common.Caller
 import it.polito.measurestream.metrology.common.Conflict
@@ -59,6 +61,8 @@ class CertificateService(
 	@Value("\${metrology.certificates.default-interval-days:365}") private val defaultIntervalDays: Long,
 	/** Lo scadenzario si ricalcola a ogni attivazione (PIANO_METROLOGIA 4.5). */
 	private val schedule: ObjectProvider<ScheduleService>,
+	private val results: CalibrationResultRepository,
+	private val sessions: CalibrationSessionRepository,
 ) {
 	// ------------------------------------------------------------------ lettura
 
@@ -264,8 +268,11 @@ class CertificateService(
 		policy.requireRole(caller, MetrologyRoleType.APPROVER, what = "Mettere in vigore un certificato")
 
 		val from = validFrom ?: OffsetDateTime.now()
-		repository.findAllBySubjectTypeAndSubjectIdAndStatus(certificate.subjectType, certificate.subjectId, CertificateStatus.EFFECTIVE)
-			.filter { it.id != certificate.id }
+		val previous =
+			repository.findAllBySubjectTypeAndSubjectIdAndStatus(certificate.subjectType, certificate.subjectId, CertificateStatus.EFFECTIVE)
+				.filter { it.id != certificate.id }
+		val (asFoundAt, driftFrom) = retroactivity(certificate, previous.maxByOrNull { it.effectiveFrom ?: it.createdAt })
+		previous
 			.forEach {
 				it.status = CertificateStatus.SUPERSEDED
 				audit.record("CERTIFICATE_SUPERSEDED", "certificate", it.id, detail = mapOf("by" to certificate.id))
@@ -277,7 +284,7 @@ class CertificateService(
 				if (certificate.function == null) {
 					throw Conflict("Il certificato non porta la funzione di taratura: senza, non puo' cambiare la conversione dei campioni")
 				}
-				activation.activate(certificate, item, from)
+				activation.activate(certificate, item, from, asFoundAt, driftFrom)
 			}
 			SubjectType.REFERENCE -> {
 				val reference = references.findById(certificate.subjectId).orElseThrow { NotFound("Campione ${certificate.subjectId} non trovato") }
@@ -292,6 +299,26 @@ class CertificateService(
 		val saved = repository.save(certificate)
 		schedule.ifAvailable?.recompute(certificate.subjectType, certificate.subjectId)
 		return toDetail(saved, caller)
+	}
+
+	/**
+	 * Che cosa sensor-manager deve rivalutare all'indietro (PIANO_METROLOGIA 5.1):
+	 * - asFoundAt: quando lo strumento e' stato trovato nello stato descritto dalla funzione
+	 *   nuova (l'inizio della sessione, o la data di taratura); fra li' e l'attivazione i campioni
+	 *   si riconvertono con la funzione nuova;
+	 * - driftFrom: solo se l'as-found era fuori tolleranza, l'inizio del periodo da correggere
+	 *   per deriva, cioe' quando era entrato in vigore il certificato precedente.
+	 */
+	private fun retroactivity(certificate: Certificate, previous: Certificate?): Pair<OffsetDateTime?, OffsetDateTime?> {
+		if (certificate.subjectType != SubjectType.ITEM) return null to null
+		val result = certificate.calibrationResultId?.let { results.findById(it).orElse(null) }
+		val session = result?.sessionId?.let { sessions.findById(it).orElse(null) }
+		val asFoundAt = session?.startedAt ?: certificate.calibrationDate?.atStartOfDay()?.atOffset(ZoneOffset.UTC)
+		val outOfTolerance = result?.conformity.orEmpty().any { it["verdict"] == "NON_CONFORM" }
+		val driftFrom =
+			if (outOfTolerance && previous != null) previous.effectiveFrom ?: previous.calibrationDate?.atStartOfDay()?.atOffset(ZoneOffset.UTC)
+			else null
+		return asFoundAt to driftFrom
 	}
 
 	/** Invalida: il certificato non vale piu', e se era in vigore la taratura si revoca. */

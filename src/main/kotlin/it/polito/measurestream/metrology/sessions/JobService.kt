@@ -190,7 +190,8 @@ class JobService(
 				"sensorIndex" to item.sensorIndex,
 				"worstError" to worst,
 				"tolerance" to tolerance,
-				"suspectSince" to since,
+				// Testo ISO: il JSON delle colonne jsonb non conosce le date di java.time.
+				"suspectSince" to since?.toString(),
 				"points" to found,
 			),
 			"As-found fuori tolleranza: MU 0x%08X sensore %d (errore %s, tolleranza %s)".format(
