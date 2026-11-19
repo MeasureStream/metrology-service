@@ -134,6 +134,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 	NonconformityService::class,
 	Notifier::class,
 	it.polito.measurestream.metrology.sessions.CertFitTrigger::class,
+	it.polito.measurestream.metrology.sessions.CalibrationStepsListener::class,
 	it.polito.measurestream.metrology.certificates.DccImportService::class,
 	it.polito.measurestream.metrology.reports.ReportService::class,
 	it.polito.measurestream.metrology.control.ControlPointService::class,
@@ -550,6 +551,24 @@ class AcceptanceCriteriaTest {
 		assertNotNull(fitted.function, "la funzione e' entrata nel certificato ancora trascritto")
 		assertEquals(CertificateStatus.ENTERED, fitted.status)
 		assertNotNull(fitted.fingerprint)
+	}
+
+	/* ----------------------------------------------- i gradini via HTTPS dal campione viaggiante */
+
+	@Test
+	fun `3_2 un gradino via REST con il token del tecnico entra nella sessione, una volta sola`() {
+		val (session, _) = sessionWithJob(JobKind.SESSION_FIT)
+		login("anna", Roles.USER)
+		val body =
+			it.polito.measurestream.metrology.jobs.contract.ContractJson.mapper.readTree(
+				"""{"phase":"AS_FOUND","sensor_index":0,"step_index":0,"target":-20.0,
+				    "step_summary":[{"target":-20.0,"minutes":10}],"start_time":"2026-11-19T08:00:00Z",
+				    "ref_readings":[-20.01,-20.02],"sensor_sampling_freq":1,"sensor_b64":"xQbHDQ==","stable":true}"""
+			)
+		val step = sessionService.receiveStep(session.id, body)
+		assertEquals(2, step.readings)
+		assertEquals(2, step.samples)
+		assertThrows<Conflict> { sessionService.receiveStep(session.id, body) }
 	}
 
 	/* ------------------------------------------------- passo 5.4: import del DCC esterno */

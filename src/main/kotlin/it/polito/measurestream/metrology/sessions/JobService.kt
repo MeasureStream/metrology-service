@@ -447,6 +447,9 @@ class SessionController(
 	@GetMapping("/sessions/{id}")
 	fun detail(@PathVariable id: Long) = service.detail(id)
 
+	@PostMapping("/sessions/{id}/steps")
+	fun step(@PathVariable id: Long, @RequestBody body: tools.jackson.databind.JsonNode) = service.receiveStep(id, body)
+
 	@PostMapping("/sessions/{id}/close-phase")
 	fun closePhase(@PathVariable id: Long, @RequestBody request: ClosePhaseRequest) = service.closePhase(id, request.phase)
 

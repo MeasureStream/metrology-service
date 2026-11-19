@@ -94,7 +94,27 @@ class SessionService(
 	private val jobService: JobService,
 	private val policy: AccessPolicy,
 	private val audit: AuditService,
+	private val stepsListener: CalibrationStepsListener,
 ) {
+	/**
+	 * Un gradino dal campione viaggiante via HTTPS, con il token del tecnico: lo stesso JSON del
+	 * topic `calibrations`, senza bisogno che il Raspberry raggiunga Kafka. Il `calib_id` e' quello
+	 * del percorso. Un gradino gia' ricevuto risponde 409, uno scartato 400 con il motivo nel log.
+	 */
+	@Transactional
+	fun receiveStep(id: Long, body: tools.jackson.databind.JsonNode): StepSummaryDTO {
+		val caller = policy.caller()
+		policy.requireRole(caller, MetrologyRoleType.TECHNICIAN, what = "Inviare i gradini di una taratura")
+		val session = find(id)
+		if (!session.active) throw Conflict("La sessione e' ${session.status}")
+		if (!body.isObject) throw BadRequest("Il gradino e' un oggetto JSON")
+		(body as tools.jackson.databind.node.ObjectNode).put("calib_id", id.toString())
+		val step =
+			stepsListener.store(body)
+				?: throw Conflict("Gradino non accettato: gia' ricevuto, o sensor_index e phase non validi per questa sessione")
+		return StepSummaryDTO(step.phase, step.sensorIndex, step.stepIndex, step.setpoint, step.referenceReadings.size, step.sensorSamples.size, step.referenceReadings.takeIf { it.isNotEmpty() }?.average(), step.receivedAt)
+	}
+
 	@Transactional
 	fun open(request: SessionOpenRequest): SessionOpenResponse {
 		val caller = policy.caller()
