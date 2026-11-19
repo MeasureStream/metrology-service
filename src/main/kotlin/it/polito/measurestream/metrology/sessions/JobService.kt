@@ -147,6 +147,7 @@ class JobService(
 			results.save(
 				CalibrationResultRecord(
 					jobId = job.id,
+					kind = result.kind,
 					sessionId = job.sessionId,
 					calibratedItemId = item.calibratedItemId,
 					function = item.function?.let { ContractJson.plain(it.toWire()) },
@@ -165,21 +166,39 @@ class JobService(
 	}
 
 	/**
-	 * DCC e PDF sono pronti: per ogni esemplare nasce il certificato interno in bozza, con la
-	 * funzione dell'ultimo fit e il tecnico della sessione come autore, cosi' l'approvatore sara'
-	 * per forza un'altra persona.
+	 * DCC e PDF sono pronti: per ogni esemplare nasce il certificato interno in bozza, con il
+	 * tecnico della sessione come autore, cosi' l'approvatore sara' per forza un'altra persona.
+	 *
+	 * Che cosa ci va dentro dipende dalla decisione presa sull'ultimo fit (passo 3.5):
+	 * - ADJUST: la funzione nuova, che diventera' quella dell'esemplare quando il certificato
+	 *   entra in vigore; punti as-found dal fit e as-left dalla verifica sui punti indipendenti;
+	 *   la conformita' e' quella dell'as-left, cioe' dello stato in cui lo strumento esce;
+	 * - NO_ADJUSTMENT: nessuna funzione nuova. Il certificato riporta quella gia' in vigore (se
+	 *   c'e'), cosi' all'attivazione l'esemplare continua a convertire come prima; la
+	 *   conformita' e' quella dell'as-left se e' stato misurato, altrimenti dell'as-found;
+	 * - REPAIR e RETIRE: nessun certificato. Lo strumento va riparato o tolto dal servizio.
 	 */
 	private fun createDraftCertificates(job: CalibrationJobRecord, result: CalibrationResult) {
 		val session = job.sessionId?.let { sessions.findById(it).orElse(null) } ?: return
 		val lab = labs.findFirstByInternalTrue()
-		val latest = results.findAllBySessionIdOrderByCreatedAtDesc(session.id).groupBy { it.calibratedItemId }.mapValues { it.value.first() }
+		val all = results.findAllBySessionIdOrderByCreatedAtDesc(session.id)
+		val fits = all.latestByItem(JobKind.SESSION_FIT)
+		val verifications = all.latestByItem(JobKind.VERIFICATION)
 		val year = Year.now().value
 
 		for (item in session.items) {
-			val fit = latest[item.id] ?: continue
+			val fit = fits[item.id] ?: continue
+			if (fit.decision == "REPAIR" || fit.decision == "RETIRE") {
+				audit.record("CERTIFICATE_NOT_DRAFTED", "calibrated_item", item.id, detail = mapOf("sessionId" to session.id, "decision" to fit.decision), userSub = "calibration-engine")
+				continue
+			}
+			val adjusted = fit.decision == "ADJUST"
+			val verification = verifications[item.id]
+			val current = certificates.findAllBySubjectTypeAndSubjectIdAndStatus(SubjectType.ITEM, item.id, CertificateStatus.EFFECTIVE).firstOrNull()
 			val docs = result.documents.filter { it.calibratedItemId == null || it.calibratedItemId == item.id }
 			val sequence = certificates.countByKind(CertificateKind.INTERNAL) + 1
-			val nonConform = fit.conformity.orEmpty().any { it["verdict"] == Verdict.NON_CONFORM.name }
+			val verdicts = (verification?.conformity ?: fit.conformity).orEmpty()
+			val nonConform = verdicts.any { it["verdict"] == Verdict.NON_CONFORM.name }
 			val certificate =
 				Certificate(
 					kind = CertificateKind.INTERNAL,
@@ -194,20 +213,22 @@ class JobService(
 					validUntil = (session.endedAt ?: OffsetDateTime.now()).plusDays(item.intervalOverrideDays?.toLong() ?: 365),
 					status = CertificateStatus.DRAFT,
 					source = CertificateSource.ENGINE,
-					function = fit.function,
-					covariance = fit.covariance,
-					calibratedMin = fit.calibratedMin,
-					calibratedMax = fit.calibratedMax,
-					calibratedDsi = fit.calibratedDsi,
-					conformity = if (fit.conformity.isNullOrEmpty()) Conformity.NOT_STATED else if (nonConform) Conformity.NON_CONFORM else Conformity.CONFORM,
-					decisionRule = fit.conformity.orEmpty().firstOrNull()?.get("decisionRule") as? String,
+					function = if (adjusted) fit.function else current?.function,
+					covariance = if (adjusted) fit.covariance else current?.covariance,
+					calibratedMin = if (adjusted) fit.calibratedMin else current?.calibratedMin,
+					calibratedMax = if (adjusted) fit.calibratedMax else current?.calibratedMax,
+					calibratedDsi = if (adjusted) fit.calibratedDsi else current?.calibratedDsi,
+					conformity = if (verdicts.isEmpty()) Conformity.NOT_STATED else if (nonConform) Conformity.NON_CONFORM else Conformity.CONFORM,
+					decisionRule = verdicts.firstOrNull()?.get("decisionRule") as? String,
 					ambient = session.ambient,
 					calibrationResultId = fit.id,
 					xmlDocumentId = docs.firstOrNull { it.kind == DocumentKind.DCC_XML }?.documentId,
 					pdfDocumentId = docs.firstOrNull { it.kind == DocumentKind.CERTIFICATE_PDF }?.documentId,
 					createdBy = session.operatorSub,
 				)
-			fit.points.orEmpty().forEach { p ->
+			val points = fit.points.orEmpty().filter { it["phase"] == PointPhase.AS_FOUND.name } +
+				verification?.points.orEmpty().filter { it["phase"] == PointPhase.AS_LEFT.name }
+			points.forEach { p ->
 				certificate.points.add(
 					CertificatePoint(
 						certificate = certificate,
@@ -226,7 +247,13 @@ class JobService(
 			}
 			certificate.fingerprint = certificateService.fingerprint(certificate)
 			val saved = certificates.save(certificate)
-			audit.record("CERTIFICATE_DRAFTED", "certificate", saved.id, detail = mapOf("jobId" to job.id.toString(), "sessionId" to session.id), userSub = "calibration-engine")
+			audit.record(
+				"CERTIFICATE_DRAFTED",
+				"certificate",
+				saved.id,
+				detail = mapOf("jobId" to job.id.toString(), "sessionId" to session.id, "decision" to fit.decision, "asLeftResultId" to verification?.id),
+				userSub = "calibration-engine",
+			)
 		}
 	}
 
@@ -261,7 +288,7 @@ class JobService(
 	fun pendingDecisions(): List<Map<String, Any?>> {
 		val caller = policy.caller()
 		if (!policy.has(caller, MetrologyRoleType.TECHNICIAN, MetrologyRoleType.APPROVER)) return emptyList()
-		return results.findAllByDecisionIsNull().map { it.toMap() }
+		return results.findAllByDecisionIsNullAndKind(JobKind.SESSION_FIT).map { it.toMap() }
 	}
 }
 

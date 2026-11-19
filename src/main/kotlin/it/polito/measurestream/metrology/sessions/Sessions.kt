@@ -1,6 +1,7 @@
 package it.polito.measurestream.metrology.sessions
 
 import it.polito.measurestream.metrology.items.CalibratedItem
+import it.polito.measurestream.metrology.jobs.contract.JobKind
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -122,6 +123,8 @@ interface CalibrationJobRepository : JpaRepository<CalibrationJobRecord, UUID> {
 class CalibrationResultRecord(
 	@Id @GeneratedValue(strategy = GenerationType.IDENTITY) var id: Long = 0,
 	@Column(name = "job_id", nullable = false) var jobId: UUID,
+	/** Da quale job viene: solo SESSION_FIT chiede la decisione di regolazione (V6). */
+	@Enumerated(EnumType.STRING) @Column(nullable = false, length = 16) var kind: JobKind = JobKind.SESSION_FIT,
 	@Column(name = "session_id") var sessionId: Long? = null,
 	@Column(name = "calibrated_item_id", nullable = false) var calibratedItemId: Long,
 	@JdbcTypeCode(SqlTypes.JSON) @Column(columnDefinition = "jsonb") var function: Map<String, Any?>? = null,
@@ -146,5 +149,9 @@ interface CalibrationResultRepository : JpaRepository<CalibrationResultRecord, L
 
 	fun findByJobIdAndCalibratedItemId(jobId: UUID, calibratedItemId: Long): CalibrationResultRecord?
 
-	fun findAllByDecisionIsNull(): List<CalibrationResultRecord>
+	fun findAllByDecisionIsNullAndKind(kind: JobKind): List<CalibrationResultRecord>
 }
+
+/** L'ultimo risultato di un certo tipo per ogni esemplare, da una lista gia' ordinata dal piu' recente. */
+fun List<CalibrationResultRecord>.latestByItem(kind: JobKind): Map<Long, CalibrationResultRecord> =
+	filter { it.kind == kind }.groupBy { it.calibratedItemId }.mapValues { it.value.first() }

@@ -160,6 +160,10 @@ class SessionService(
 				jobService.enqueue(JobKind.SESSION_FIT, session, caller.sub)
 			}
 			StepPhase.AS_LEFT -> {
+				// L'as-left verifica la funzione che resta in vigore: senza la decisione non si
+				// sa quale sia (passo 3.5).
+				val undecided = results.findAllBySessionIdOrderByCreatedAtDesc(id).latestByItem(JobKind.SESSION_FIT).values.filter { it.decision == null }
+				if (undecided.isNotEmpty()) throw Conflict("Prima la decisione di regolazione: manca per ${undecided.size} esemplari")
 				session.status = SessionStatus.AS_LEFT_DONE
 				jobService.enqueue(JobKind.VERIFICATION, session, caller.sub)
 			}
@@ -174,9 +178,18 @@ class SessionService(
 		val caller = policy.caller()
 		policy.requireRole(caller, MetrologyRoleType.TECHNICIAN, what = "Generare i documenti di una taratura")
 		val session = find(id)
-		val pending = results.findAllBySessionIdOrderByCreatedAtDesc(id).filter { it.decision == null }
-		if (results.findAllBySessionIdOrderByCreatedAtDesc(id).isEmpty()) throw Conflict("Il motore non ha ancora restituito un risultato")
+		val all = results.findAllBySessionIdOrderByCreatedAtDesc(id)
+		val fits = all.latestByItem(JobKind.SESSION_FIT)
+		if (fits.isEmpty()) throw Conflict("Il motore non ha ancora restituito un risultato")
+		val pending = fits.values.filter { it.decision == null }
 		if (pending.isNotEmpty()) throw Conflict("Manca la decisione di regolazione per ${pending.size} esemplari")
+		// Dopo una regolazione l'as-left su punti indipendenti e' obbligatorio, se la procedura
+		// li prevede: un certificato con la funzione nuova senza la sua verifica non si emette.
+		val verified = all.latestByItem(JobKind.VERIFICATION).keys
+		val unverified = fits.values.filter { it.decision == "ADJUST" && it.calibratedItemId !in verified }
+		if (unverified.isNotEmpty() && asLeftPoints(session).isNotEmpty()) {
+			throw Conflict("Dopo la regolazione serve l'as-left sui punti indipendenti della procedura: manca per ${unverified.size} esemplari")
+		}
 		jobService.enqueue(JobKind.DOCUMENTS, session, caller.sub)
 		return toDTO(session, detailed = true)
 	}
@@ -239,6 +252,14 @@ class SessionService(
 		)
 
 	private fun numbers(raw: Any?): List<Double> = (raw as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toDouble() }
+
+	/** I punti as-left della procedura della sessione; vuoto se la procedura non li prevede. */
+	private fun asLeftPoints(session: CalibrationSession): List<Double> {
+		val procedure = runCatching { sensorManager.template("procedure", session.procedureTemplateId, session.procedureVersion) }.getOrNull()
+		@Suppress("UNCHECKED_CAST")
+		val content = procedure?.get("content") as? Map<String, Any?> ?: return emptyList()
+		return numbers((content["asLeft"] as? Map<*, *>)?.get("points"))
+	}
 }
 
 fun CalibrationResultRecord.toMap(): Map<String, Any?> =
@@ -254,7 +275,9 @@ fun CalibrationResultRecord.toMap(): Map<String, Any?> =
 		"points" to points,
 		"budget" to budget,
 		"conformity" to conformity,
+		"kind" to kind.name,
 		"suggestedDecision" to suggestedDecision,
+		"adjustmentApplied" to adjustmentApplied,
 		"decision" to decision,
 		"decisionReason" to decisionReason,
 		"decidedBy" to decidedBy,

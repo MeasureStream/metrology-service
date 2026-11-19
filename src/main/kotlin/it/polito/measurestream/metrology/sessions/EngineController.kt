@@ -7,6 +7,7 @@ import it.polito.measurestream.metrology.certificates.toDTO
 import it.polito.measurestream.metrology.common.Forbidden
 import it.polito.measurestream.metrology.common.NotFound
 import it.polito.measurestream.metrology.items.toDTO
+import it.polito.measurestream.metrology.jobs.contract.JobKind
 import it.polito.measurestream.metrology.references.ReferenceStandardRepository
 import it.polito.measurestream.metrology.security.AccessPolicy
 import java.util.UUID
@@ -33,6 +34,7 @@ class EngineController(
 	private val steps: SessionStepRepository,
 	private val references: ReferenceStandardRepository,
 	private val certificates: CertificateRepository,
+	private val results: CalibrationResultRepository,
 	private val policy: AccessPolicy,
 ) {
 	@GetMapping("/jobs/{jobId}/context")
@@ -44,6 +46,9 @@ class EngineController(
 		val session = job.sessionId?.let { sessions.findById(it).orElse(null) }
 		val reference = session?.let { references.findById(it.referenceStandardId).orElse(null) }
 		val referenceCertificate = session?.referenceCertificateId?.let { certificates.findById(it).orElse(null) }
+		// L'ultimo fit di ogni esemplare con la decisione del tecnico: VERIFICATION verifica la
+		// funzione nuova se si e' regolato, quella in vigore se no; DOCUMENTS lo dice nel DCC.
+		val fits = session?.let { results.findAllBySessionIdOrderByCreatedAtDesc(it.id).latestByItem(JobKind.SESSION_FIT) }.orEmpty()
 
 		return mapOf(
 			"job" to job.request,
@@ -69,6 +74,18 @@ class EngineController(
 						"currentCertificate" to
 							current?.let { c ->
 								mapOf("id" to c.id, "number" to c.number, "revision" to c.revision, "function" to c.function, "covariance" to c.covariance, "validUntil" to c.validUntil)
+							},
+						"latestFit" to
+							fits[item.id]?.let { r ->
+								mapOf(
+									"resultId" to r.id,
+									"function" to r.function,
+									"covariance" to r.covariance,
+									"calibratedMin" to r.calibratedMin,
+									"calibratedMax" to r.calibratedMax,
+									"calibratedDsi" to r.calibratedDsi,
+									"decision" to r.decision,
+								)
 							},
 					)
 				},
