@@ -20,8 +20,7 @@ repositories {
 }
 
 // Solo cio' che serve adesso. Gli starter delle fasi successive entrano con la fase che li usa:
-// posta con lo scadenzario (fase 4), Thymeleaf e OpenHTMLtoPDF con i report (fase 5),
-// Santuario e PDFBox con la verifica delle firme (passo 1.10).
+// posta con lo scadenzario (fase 4), Thymeleaf e OpenHTMLtoPDF con i report (fase 5).
 dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
@@ -33,6 +32,12 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-kafka")
 	implementation("tools.jackson.module:jackson-module-kotlin")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
+	// Firma e verifica dei certificati (passi 1.10 e 3.8): XMLDSig con Apache Santuario, come in
+	// dccverify, e PDF con PDFBox al posto di iText 8, che ha licenza AGPL.
+	implementation("org.apache.santuario:xmlsec:4.0.4")
+	implementation("org.apache.pdfbox:pdfbox:3.0.8")
+	implementation("org.bouncycastle:bcprov-jdk18on:1.87")
+	implementation("org.bouncycastle:bcpkix-jdk18on:1.87")
 	runtimeOnly("org.postgresql:postgresql")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
@@ -45,6 +50,9 @@ dependencies {
 	testImplementation("org.testcontainers:testcontainers-kafka")
 	testImplementation("org.testcontainers:testcontainers-postgresql")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
+	// PostgreSQL vero senza Docker: migrazioni, trigger e mappatura JPA si provano anche qui.
+	testImplementation("io.zonky.test:embedded-postgres:2.2.2")
+	testImplementation(enforcedPlatform("io.zonky.test.postgres:embedded-postgres-binaries-bom:17.12.0"))
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

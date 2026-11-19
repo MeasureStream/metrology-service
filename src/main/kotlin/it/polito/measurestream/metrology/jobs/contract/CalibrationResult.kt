@@ -81,6 +81,10 @@ data class DocumentRef(
 	val documentId: Long,
 	val kind: DocumentKind,
 	val sha256: String,
+	/** L'esemplare a cui appartiene, quando la sessione ne tara piu' d'uno. Assente se vale per tutti. */
+	@field:com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+	@get:com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+	val calibratedItemId: Long? = null,
 ) {
 	init {
 		require(SHA256.matches(sha256)) { "impronta SHA-256 non valida: $sha256" }
