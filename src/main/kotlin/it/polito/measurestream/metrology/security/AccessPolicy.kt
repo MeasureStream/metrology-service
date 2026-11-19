@@ -22,9 +22,15 @@ class AccessPolicy(
 ) {
 	fun caller(): Caller = currentUser.get()
 
-	/** I ruoli metrologici di una persona validi alla data. */
+	/**
+	 * I ruoli metrologici **interni** di una persona validi alla data: quelli che ne fanno personale
+	 * del laboratorio. Un ruolo legato a un laboratorio esterno (`labCompanyId`) non ne fa parte:
+	 * serve solo a [labOf], cioe' a dire a quale laboratorio appartiene un utente `app-lab`. Contarlo
+	 * qui ne farebbe personale interno: vedrebbe gli oggetti di tutti i clienti e, da approvatore,
+	 * approverebbe [S §9].
+	 */
 	fun metrologyRoles(sub: String, at: LocalDate = LocalDate.now()): Set<MetrologyRoleType> =
-		roles.findAllByUserSub(sub).filter { it.validAt(at) }.map { it.role }.toSet()
+		roles.findAllByUserSub(sub).filter { it.validAt(at) && it.labCompanyId == null }.map { it.role }.toSet()
 
 	/** Il laboratorio esterno di un utente app-lab, dal suo ruolo metrologico. */
 	fun labOf(sub: String, at: LocalDate = LocalDate.now()): Long? =
@@ -32,13 +38,19 @@ class AccessPolicy(
 
 	fun has(caller: Caller, vararg wanted: MetrologyRoleType, at: LocalDate = LocalDate.now()): Boolean {
 		if (caller.isAdmin) return true
+		// Un utente di un laboratorio esterno non e' mai personale interno, nemmeno se per errore gli
+		// fosse stato dato un ruolo senza laboratorio: puo' solo cio' che gli concede [labOf].
+		if (caller.isLab) return false
 		val held = metrologyRoles(caller.sub, at)
 		if (MetrologyRoleType.TECHNICAL_MANAGER in held) return true
 		return wanted.any { it in held }
 	}
 
-	/** Personale del laboratorio: chi ha un ruolo metrologico valido, o l'amministratore. */
-	fun isStaff(caller: Caller = caller()): Boolean = caller.isAdmin || metrologyRoles(caller.sub).isNotEmpty()
+	/**
+	 * Personale del laboratorio: l'amministratore, o chi ha un ruolo metrologico interno valido e
+	 * non e' un utente di un laboratorio esterno.
+	 */
+	fun isStaff(caller: Caller = caller()): Boolean = caller.isAdmin || (!caller.isLab && metrologyRoles(caller.sub).isNotEmpty())
 
 	fun requireAdmin(caller: Caller = caller()) {
 		if (!caller.isAdmin) throw Forbidden("Operazione riservata agli amministratori")
