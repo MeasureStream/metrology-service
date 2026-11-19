@@ -125,6 +125,8 @@ data class ProfileSpec(
 	val calibrationInterval: Period?,
 	val intermediateCheckInterval: Period?,
 	val instrumentMpe: Double?,
+	/** L'incertezza estesa massima (k = 2) del riferimento delle verifiche intermedie. */
+	val verificationReferenceUMax: Double? = null,
 ) {
 	companion object {
 		fun of(profile: Map<String, Any?>): ProfileSpec {
@@ -152,6 +154,12 @@ data class ProfileSpec(
 				calibrationInterval = (intervals?.get("calibration") as? String)?.let { runCatching { Period.parse(it) }.getOrNull() },
 				intermediateCheckInterval = (intervals?.get("intermediateCheck") as? String)?.let { runCatching { Period.parse(it) }.getOrNull() },
 				instrumentMpe = ((profile["instrument"] as? Map<*, *>)?.get("mpe") as? Number)?.toDouble(),
+				verificationReferenceUMax =
+					(profile["verificationReference"] as? Map<*, *>)?.let { v ->
+						val uMax = (v["uMax"] as? Number)?.toDouble()
+						val k = (v["k"] as? Number)?.toDouble() ?: 2.0
+						uMax?.let { it * 2.0 / k }
+					},
 			)
 		}
 	}

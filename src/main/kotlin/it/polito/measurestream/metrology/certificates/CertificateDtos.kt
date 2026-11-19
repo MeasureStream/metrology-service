@@ -4,6 +4,9 @@ import it.polito.measurestream.metrology.jobs.contract.CalibrationFunction
 import java.time.LocalDate
 import java.time.OffsetDateTime
 
+/** Un certificato esterno trascritto senza funzione: il motore la ricava dai punti (CERT_FIT). */
+data class CertFitRequested(val certificateId: Long, val requestedBy: String)
+
 /** Un punto come lo inserisce chi trascrive un certificato. */
 data class PointRequest(
 	val phase: PointPhase = PointPhase.AS_LEFT,

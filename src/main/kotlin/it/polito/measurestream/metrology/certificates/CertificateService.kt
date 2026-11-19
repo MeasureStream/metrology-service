@@ -2,6 +2,7 @@ package it.polito.measurestream.metrology.certificates
 
 import it.polito.measurestream.metrology.activation.ActivationService
 import it.polito.measurestream.metrology.common.AuditService
+import it.polito.measurestream.metrology.control.IntervalService
 import it.polito.measurestream.metrology.control.ScheduleService
 import it.polito.measurestream.metrology.sessions.CalibrationResultRepository
 import it.polito.measurestream.metrology.sessions.CalibrationSessionRepository
@@ -26,6 +27,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.UUID
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -63,6 +65,9 @@ class CertificateService(
 	private val schedule: ObjectProvider<ScheduleService>,
 	private val results: CalibrationResultRepository,
 	private val sessions: CalibrationSessionRepository,
+	/** La proposta d'intervallo dopo ogni taratura in vigore (PIANO_METROLOGIA 5.2). */
+	private val intervals: ObjectProvider<IntervalService>,
+	private val events: ApplicationEventPublisher,
 ) {
 	// ------------------------------------------------------------------ lettura
 
@@ -177,6 +182,12 @@ class CertificateService(
 		certificate.enteredAt = OffsetDateTime.now()
 		val saved = repository.saveAndFlush(certificate)
 		audit.record("CERTIFICATE_ENTERED", "certificate", id, before = before, after = snapshot(saved))
+		// Un certificato esterno con i punti ma senza la funzione: la ricava il motore (CERT_FIT,
+		// passo 5.3), prima della verifica, perche' dopo il contenuto e' bloccato.
+		val fittable = saved.points.count { it.referenceValue != null && it.indicatedValue != null }
+		if (saved.subjectType == SubjectType.ITEM && saved.function == null && fittable >= 2) {
+			events.publishEvent(CertFitRequested(saved.id, caller.sub))
+		}
 		return toDetail(saved, caller)
 	}
 
@@ -298,6 +309,7 @@ class CertificateService(
 		audit.record("CERTIFICATE_EFFECTIVE", "certificate", id, after = snapshot(certificate))
 		val saved = repository.save(certificate)
 		schedule.ifAvailable?.recompute(certificate.subjectType, certificate.subjectId)
+		intervals.ifAvailable?.proposeAfter(saved)
 		return toDetail(saved, caller)
 	}
 
@@ -461,8 +473,13 @@ class CertificateService(
 			throw BadRequest("La data di emissione non puo' precedere quella di taratura")
 		}
 		val function = data.function
-		if (certificate.subjectType == SubjectType.ITEM && function == null) {
-			throw BadRequest("Per un esemplare serve la funzione di taratura: e' quella che cambiera' la conversione dei campioni")
+		// Senza funzione bastano due punti con indicazione e riferimento: la ricava il motore
+		// (CERT_FIT, passo 5.3) prima della verifica.
+		val fittable = data.points.count { it.referenceValue != null && it.indicatedValue != null }
+		if (certificate.subjectType == SubjectType.ITEM && function == null && fittable < 2) {
+			throw BadRequest(
+				"Per un esemplare serve la funzione di taratura, o almeno due punti con indicazione e riferimento da cui il motore la ricavi"
+			)
 		}
 		data.covariance?.let { matrix ->
 			val n = function?.c?.size ?: throw BadRequest("Una covarianza senza funzione non ha senso")

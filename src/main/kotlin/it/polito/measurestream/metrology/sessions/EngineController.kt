@@ -35,6 +35,7 @@ class EngineController(
 	private val references: ReferenceStandardRepository,
 	private val certificates: CertificateRepository,
 	private val results: CalibrationResultRepository,
+	private val items: it.polito.measurestream.metrology.items.CalibratedItemRepository,
 	private val policy: AccessPolicy,
 ) {
 	@GetMapping("/jobs/{jobId}/context")
@@ -43,6 +44,7 @@ class EngineController(
 		val caller = policy.caller()
 		if (!caller.isEngine && !policy.isStaff(caller)) throw Forbidden("Contesto dei job riservato al motore e al personale")
 		val job = jobs.findById(jobId).orElseThrow { NotFound("Job $jobId non trovato") }
+		job.certificateId?.let { return certificateContext(job, it) }
 		val session = job.sessionId?.let { sessions.findById(it).orElse(null) }
 		val reference = session?.let { references.findById(it.referenceStandardId).orElse(null) }
 		val referenceCertificate = session?.referenceCertificateId?.let { certificates.findById(it).orElse(null) }
@@ -132,6 +134,27 @@ class EngineController(
 						"points" to c.points.map { it.toDTO() },
 					)
 				},
+		)
+	}
+
+	/** Il contesto di CERT_FIT: il certificato con i suoi punti e l'esemplare a cui appartiene. */
+	private fun certificateContext(job: CalibrationJobRecord, certificateId: Long): Map<String, Any?> {
+		val certificate = certificates.findById(certificateId).orElseThrow { NotFound("Certificato $certificateId non trovato") }
+		val item = if (certificate.subjectType == SubjectType.ITEM) items.findById(certificate.subjectId).orElse(null) else null
+		return mapOf(
+			"job" to job.request,
+			"session" to null,
+			"certificate" to
+				mapOf(
+					"id" to certificate.id,
+					"number" to certificate.number,
+					"revision" to certificate.revision,
+					"issuer" to certificate.issuer,
+					"calibrationDate" to certificate.calibrationDate,
+					"points" to certificate.points.map { it.toDTO() },
+				),
+			"items" to listOfNotNull(item?.let { mapOf("item" to it.toDTO(), "currentCertificate" to null) }),
+			"steps" to emptyList<Any>(),
 		)
 	}
 }

@@ -103,6 +103,27 @@ class JobService(
 		return record
 	}
 
+	/** Un job su un certificato, senza sessione: CERT_FIT (passo 5.3). */
+	fun enqueueForCertificate(kind: JobKind, certificateId: Long, requestedBy: String): CalibrationJobRecord {
+		val message =
+			CalibrationJob(jobId = UUID.randomUUID(), kind = kind, certificateId = certificateId, requestedBy = requestedBy, requestedAt = Instant.now())
+		val json = ContractJson.write(message)
+		@Suppress("UNCHECKED_CAST")
+		val record =
+			jobs.save(
+				CalibrationJobRecord(
+					id = message.jobId,
+					kind = kind.name,
+					certificateId = certificateId,
+					request = ContractJson.mapper.readValue(json, Map::class.java) as Map<String, Any?>,
+					requestedBy = requestedBy,
+				)
+			)
+		outbox.enqueue(CalibrationTopics.JOBS, message.jobId.toString(), json)
+		audit.record("JOB_QUEUED", "calibration_job", null, detail = mapOf("jobId" to message.jobId.toString(), "kind" to kind.name, "certificateId" to certificateId), userSub = requestedBy)
+		return record
+	}
+
 	/** Applica un risultato del motore. Idempotente sull'id del job. */
 	@Transactional
 	fun apply(result: CalibrationResult) {
@@ -163,8 +184,33 @@ class JobService(
 					suggestedDecision = item.suggestedDecision.name,
 					adjustmentApplied = item.adjustmentApplied,
 				)
-			).also { saved -> if (result.kind == JobKind.SESSION_FIT) instrumentNonconformity(job, saved) }
+			).also { saved ->
+				if (result.kind == JobKind.SESSION_FIT) instrumentNonconformity(job, saved)
+				if (result.kind == JobKind.CERT_FIT) applyCertFit(job, saved)
+			}
 		}
+	}
+
+	/**
+	 * La funzione ricavata dai punti di un certificato esterno entra nel certificato, se e' ancora
+	 * modificabile (bozza o trascritto) e non ne ha una: dopo la verifica il contenuto e' bloccato,
+	 * e la funzione resta nel risultato, da riportare con una revisione.
+	 */
+	private fun applyCertFit(job: CalibrationJobRecord, record: CalibrationResultRecord) {
+		val certificate = job.certificateId?.let { certificates.findById(it).orElse(null) } ?: return
+		if (certificate.status !in setOf(CertificateStatus.DRAFT, CertificateStatus.ENTERED) || certificate.function != null) {
+			log.info("CERT_FIT del certificato {}: il certificato e' {}, la funzione resta nel risultato {}", certificate.id, certificate.status, record.id)
+			return
+		}
+		certificate.function = record.function
+		certificate.covariance = record.covariance
+		certificate.calibratedMin = record.calibratedMin
+		certificate.calibratedMax = record.calibratedMax
+		certificate.calibratedDsi = record.calibratedDsi
+		certificate.calibrationResultId = record.id
+		certificate.fingerprint = certificateService.fingerprint(certificate)
+		certificates.save(certificate)
+		audit.record("CERTIFICATE_FUNCTION_FITTED", "certificate", certificate.id, detail = mapOf("resultId" to record.id, "jobId" to job.id.toString()), userSub = "calibration-engine")
 	}
 
 	/**

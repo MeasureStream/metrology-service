@@ -2,6 +2,8 @@ package it.polito.measurestream.metrology.control
 
 import it.polito.measurestream.metrology.certificates.Certificate
 import it.polito.measurestream.metrology.certificates.CertificateKind
+import it.polito.measurestream.metrology.certificates.CertificatePoint
+import it.polito.measurestream.metrology.certificates.PointPhase
 import it.polito.measurestream.metrology.certificates.CertificateRepository
 import it.polito.measurestream.metrology.certificates.CertificateSource
 import it.polito.measurestream.metrology.certificates.CertificateStatus
@@ -64,6 +66,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 	NonconformityService::class,
 	Notifier::class,
 	ScheduleService::class,
+	CheckService::class,
+	ControlChartService::class,
+	IntervalService::class,
 )
 class ControlPointsTest {
 	companion object {
@@ -83,6 +88,8 @@ class ControlPointsTest {
 				"limits" to mapOf("high" to -18.0),
 				"intervals" to mapOf("calibration" to "P1Y", "intermediateCheck" to "P3M"),
 				"decisionRule" to mapOf("type" to "guarded", "guardBand" to "U", "guardZoneOpensExcursionAfter" to "PT30M"),
+				"instrument" to mapOf("class" to "0,5", "mpe" to 0.5),
+				"verificationReference" to mapOf("uMax" to 0.25, "k" to 2),
 			)
 	}
 
@@ -98,7 +105,13 @@ class ControlPointsTest {
 	@Autowired lateinit var scheduleItems: ScheduleItemRepository
 	@Autowired lateinit var certificates: CertificateRepository
 	@Autowired lateinit var items: ItemService
+	@Autowired lateinit var itemRepository: it.polito.measurestream.metrology.items.CalibratedItemRepository
+	@Autowired lateinit var roles: it.polito.measurestream.metrology.security.MetrologyRoleRepository
 	@Autowired lateinit var em: EntityManager
+	@Autowired lateinit var checks: CheckService
+	@Autowired lateinit var charts: ControlChartService
+	@Autowired lateinit var intervals: IntervalService
+	@Autowired lateinit var proposals: IntervalProposalRepository
 
 	private val cellA = 0x1A2B3C4DL
 	private val cellB = 0x1A2B3C4EL
@@ -263,6 +276,88 @@ class ControlPointsTest {
 		val entry = schedule.entries(today).single { it.subjectId == item.id }
 		assertEquals(DueLevel.WITHIN_30, entry.level)
 		assertEquals(0, schedule.remind(today), "una volta sola per livello")
+	}
+
+	/* ------------------------------------------------------------------------- 5.2 */
+
+	@Test
+	fun `5_2 una verifica intermedia - En, esito, e la scadenza che riparte`() {
+		val point = cell()
+		service.assign(point.id, AssignRequest(cellA, 0, from = t0))
+		val ok = checks.record(CheckRequest(cellA, 0, referenceValue = -18.40, referenceU = 0.1, indicatedValue = -18.30, checkedAt = t0.plusDays(10)))
+		assertEquals(CheckVerdict.PASS, ok.verdict)
+		assertEquals(2 * 0.5 / kotlin.math.sqrt(3.0), ok.indicatedU, 1e-12, "senza incertezza dell'indicazione: quella di targa dal profilo")
+		val row = scheduleItems.findBySubjectTypeAndSubjectIdAndKind(SubjectType.ITEM, ok.calibratedItemId, ScheduleKind.INTERMEDIATE_CHECK)
+		assertNotNull(row)
+		assertEquals(t0.plusDays(10).plusMonths(3).toInstant(), row.dueAt!!.toInstant(), "la prossima verifica a tre mesi dall'ultima (P3M)")
+	}
+
+	@Test
+	fun `5_2 una verifica fallita apre una non conformita' di strumento`() {
+		val point = cell()
+		service.assign(point.id, AssignRequest(cellA, 0, from = t0))
+		val failed = checks.record(CheckRequest(cellA, 0, referenceValue = -18.4, referenceU = 0.1, indicatedValue = -17.7, indicatedU = 0.1))
+		assertEquals(CheckVerdict.FAIL, failed.verdict)
+		val nc = nonconformities.findById(failed.nonconformityId!!).orElseThrow()
+		assertEquals(NonconformityType.INSTRUMENT, nc.type)
+	}
+
+	@Test
+	fun `5_2 un riferimento troppo incerto per il profilo non vale come verifica`() {
+		val point = cell()
+		service.assign(point.id, AssignRequest(cellA, 0, from = t0))
+		assertThrows<BadRequest> { checks.record(CheckRequest(cellA, 0, referenceValue = -18.4, referenceU = 0.4, indicatedValue = -18.3)) }
+	}
+
+	@Test
+	fun `5_2 la carta di controllo dalle verifiche`() {
+		val point = cell()
+		service.assign(point.id, AssignRequest(cellA, 0, from = t0))
+		listOf(0.05, 0.07, 0.04, 0.06).forEachIndexed { i, e ->
+			checks.record(CheckRequest(cellA, 0, referenceValue = -18.4, referenceU = 0.1, indicatedValue = -18.4 + e, indicatedU = 0.2, checkedAt = t0.plusMonths(i.toLong())))
+		}
+		val item = items.resolveOrCreate(cellA, 0)
+		val chart = charts.chart(item.id)
+		assertEquals(4, chart.points.size)
+		assertEquals(0.055, chart.center!!, 1e-9)
+		assertNotNull(chart.ucl)
+	}
+
+	@Test
+	fun `5_2 OIML D 10 a gradini - trovato bene, l'intervallo si propone piu' lungo e chi ha il ruolo lo accetta`() {
+		val item = items.resolveOrCreate(cellA, 0)
+		val certificate =
+			certificates.save(
+				Certificate(
+					kind = CertificateKind.EXTERNAL,
+					subjectType = SubjectType.ITEM,
+					subjectId = item.id,
+					number = "LAT-042-2026-0002",
+					calibrationDate = LocalDate.of(2026, 3, 1),
+					validUntil = OffsetDateTime.of(2027, 3, 1, 0, 0, 0, 0, ZoneOffset.UTC),
+					status = CertificateStatus.ENTERED,
+					source = CertificateSource.PDF_MANUAL,
+					createdBy = "cliente",
+				).also { c ->
+					c.points.add(CertificatePoint(certificate = c, phase = PointPhase.AS_FOUND, pointIndex = 0, referenceValue = -18.0, indicatedValue = -17.9, error = 0.1))
+				}
+			)
+		em.flush()
+		// I punti si scrivono prima: dopo l'entrata in vigore il database li blocca.
+		certificate.status = CertificateStatus.EFFECTIVE
+		certificates.save(certificate)
+		val point = cell()
+		service.assign(point.id, AssignRequest(cellA, 0, from = t0))
+		em.flush()
+
+		val proposal = assertNotNull(intervals.proposeAfter(certificate))
+		assertEquals(365, proposal.currentDays, "P1Y del profilo")
+		assertEquals(456, proposal.proposedDays, "errore al 20 % della tolleranza: si allunga del 25 %")
+
+		assertThrows<it.polito.measurestream.metrology.common.Forbidden> { intervals.accept(proposal.id, ProposalDecision()) }
+		roles.save(it.polito.measurestream.metrology.security.MetrologyRole(userSub = "cliente", role = it.polito.measurestream.metrology.security.MetrologyRoleType.APPROVER, validFrom = LocalDate.now().minusDays(1), grantedBy = "admin"))
+		intervals.accept(proposal.id, ProposalDecision("storia stabile"))
+		assertEquals(proposal.proposedDays, itemRepository.findById(item.id).orElseThrow().intervalOverrideDays)
 	}
 
 	/* ----------------------------------------------------------------- clima storico */

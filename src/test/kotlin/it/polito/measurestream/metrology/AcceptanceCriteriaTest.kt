@@ -133,6 +133,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 	EngineController::class,
 	NonconformityService::class,
 	Notifier::class,
+	it.polito.measurestream.metrology.sessions.CertFitTrigger::class,
 )
 class AcceptanceCriteriaTest {
 	companion object {
@@ -166,6 +167,7 @@ class AcceptanceCriteriaTest {
 	@Autowired lateinit var steps: SessionStepRepository
 	@Autowired lateinit var engine: EngineController
 	@Autowired lateinit var nonconformityRepository: NonconformityRepository
+	@Autowired lateinit var jobRecords: it.polito.measurestream.metrology.sessions.CalibrationJobRepository
 
 	private val euid = 439041101L
 
@@ -484,6 +486,60 @@ class AcceptanceCriteriaTest {
 		assertNotNull(event["asFoundAt"], "da quando vale gia' la funzione nuova (GAP)")
 		assertNotNull(event["driftFrom"], "as-found fuori tolleranza: la deriva si corregge dal certificato precedente (DRIFT)")
 		assertEquals(previous.id, certificateRepository.findById(previous.id).orElseThrow().id)
+	}
+
+	/* ------------------------------------------------- passo 5.3: CERT_FIT */
+
+	@Test
+	fun `5_3 un certificato esterno senza funzione la riceve dal motore prima della verifica`() {
+		login("anna", Roles.USER)
+		val draft = certificates.createExternal(SubjectRef(muExtendedId = euid, sensorIndex = 0), "%PDF esterno".toByteArray(), "application/pdf", "esterno.pdf")
+		certificates.enterData(
+			draft.id,
+			CertificateDataRequest(
+				number = "LAT-042-2026-0100",
+				issuer = "Laboratorio esterno",
+				calibrationDate = LocalDate.now().minusDays(2),
+				points =
+					listOf(-20.0, 0.0, 20.0).mapIndexed { i, r ->
+						it.polito.measurestream.metrology.certificates.PointRequest(pointIndex = i, referenceValue = r, indicatedValue = r + 0.3, expandedU = 0.1)
+					},
+			),
+		)
+		em.flush()
+		val job = jobRecords.findAll().single { it.kind == JobKind.CERT_FIT.name }
+		assertEquals(draft.id, job.certificateId)
+		@Suppress("UNCHECKED_CAST")
+		val context = engine.context(job.id)
+		assertEquals(3, ((context["certificate"] as Map<String, Any?>)["points"] as List<*>).size)
+
+		val item = itemRepository.findByMuExtendedIdAndSensorIndex(euid, 0)!!
+		jobs.apply(
+			CalibrationResult(
+				jobId = job.id,
+				kind = JobKind.CERT_FIT,
+				status = JobStatus.DONE,
+				engineVersion = "test",
+				startedAt = Instant.now(),
+				finishedAt = Instant.now(),
+				items =
+					listOf(
+						ItemResult(
+							calibratedItemId = item.id,
+							muExtendedId = euid,
+							sensorIndex = 0,
+							function = CalibrationFunction("certfit_linear", "(c0 + x) + c[0] + c[1] * (c0 + x)", listOf("x"), listOf(Coefficient(0, -0.3), Coefficient(1, 0.0))),
+							covariance = listOf(listOf(0.001, 0.0), listOf(0.0, 1e-6)),
+							calibratedRange = CalibratedRange(-20.0, 20.0),
+						)
+					),
+			)
+		)
+		em.flush()
+		val fitted = certificateRepository.findById(draft.id).orElseThrow()
+		assertNotNull(fitted.function, "la funzione e' entrata nel certificato ancora trascritto")
+		assertEquals(CertificateStatus.ENTERED, fitted.status)
+		assertNotNull(fitted.fingerprint)
 	}
 
 	/* ------------------------------------------------------------------ supporto */
