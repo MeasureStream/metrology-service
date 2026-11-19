@@ -9,6 +9,7 @@ import it.polito.measurestream.metrology.items.ItemDTO
 import it.polito.measurestream.metrology.items.ItemService
 import it.polito.measurestream.metrology.items.SensorManagerClient
 import it.polito.measurestream.metrology.items.toDTO
+import it.polito.measurestream.metrology.jobs.contract.CalibrationTopics
 import it.polito.measurestream.metrology.jobs.contract.ContractJson
 import it.polito.measurestream.metrology.jobs.contract.JobKind
 import it.polito.measurestream.metrology.jobs.contract.TemplateVersionRef
@@ -324,7 +325,7 @@ class CalibrationStepsListener(
 ) {
 	private val log = LoggerFactory.getLogger(CalibrationStepsListener::class.java)
 
-	@KafkaListener(topics = ["calibrations"], groupId = "metrology-service-calibrations")
+	@KafkaListener(topics = [CalibrationTopics.STEPS], groupId = "metrology-service-calibrations")
 	@Transactional
 	fun consume(message: String) {
 		val root =

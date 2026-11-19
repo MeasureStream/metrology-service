@@ -104,9 +104,11 @@ class OutboxPublisher(
 }
 
 /**
- * I topic di cui questo servizio e' l'autore. `calibration-activated` e' compattato: Kafka tiene
- * l'ultima attivazione di ogni esemplare, ed e' cio' da cui sensor-manager ricostruisce lo
- * stato. Lo dichiara anche sensor-manager, cosi' chi parte per primo lo crea giusto.
+ * I topic di cui questo servizio e' l'autore, piu' quello dei gradini che consuma.
+ * `calibration-activated` e' compattato: Kafka tiene l'ultima attivazione di ogni esemplare, ed
+ * e' cio' da cui sensor-manager ricostruisce lo stato. Lo dichiara anche sensor-manager, cosi'
+ * chi parte per primo lo crea giusto. `calibrations` lo scrive il campione viaggiante: dichiararlo
+ * qui evita di dipendere dalla creazione automatica del broker (se esiste gia', resta com'e').
  */
 @Configuration
 @EnableScheduling
@@ -119,4 +121,7 @@ class KafkaTopics {
 
 	@Bean
 	fun calibrationResultsTopic() = TopicBuilder.name(CalibrationTopics.RESULTS).partitions(1).replicas(1).build()
+
+	@Bean
+	fun calibrationStepsTopic() = TopicBuilder.name(CalibrationTopics.STEPS).partitions(1).replicas(1).build()
 }

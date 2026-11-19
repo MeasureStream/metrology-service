@@ -20,6 +20,13 @@ object CalibrationTopics {
 
 	/** Motore → metrology-service, chiave = jobId. */
 	const val RESULTS = "calibration-results"
+
+	/**
+	 * Campione viaggiante → metrology-service: i gradini di una sessione, un messaggio per
+	 * gradino e per sensore. Lo stesso JSON si puo' mandare via HTTPS a
+	 * `POST /API/metrology/sessions/{id}/steps` (Docs/Campione_viaggiante.md).
+	 */
+	const val STEPS = "calibrations"
 }
 
 const val SCHEMA_VERSION = 1
