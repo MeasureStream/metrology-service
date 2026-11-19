@@ -99,6 +99,25 @@ class CalibrationStepsListenerTest {
 	}
 
 	@Test
+	fun `il formato di oggi del Raspberry, con numeri e liste scritti come stringhe`() {
+		val s = session(4)
+		val today =
+			ContractJson.mapper.readTree(
+				"""{"calib_id":"${s.id}","target":"-20.0","step_index":"0",
+				    "step_summary":"[{'target': -20.0, 'minutes': 1}, {'target': -10.0, 'minutes': 1}]",
+				    "start_time":"2026-07-09T18:49:56Z","start_time_dwell":"2026-07-09T18:49:56.200000Z",
+				    "ref_readings":"[-20.0136, -20.0144]","sensor_sampling_freq":"1",
+				    "sensor_b64":"${Base64.getEncoder().encodeToString(byteArrayOf(0xC5.toByte(), 0x06))}"}"""
+			)
+		val step = assertNotNull(listener.store(today))
+		assertEquals(-20.0, step.setpoint)
+		assertEquals(listOf(-20.0136, -20.0144), step.referenceReadings)
+		assertEquals(1, step.minutes)
+		assertEquals(2, step.totalSteps)
+		assertEquals(1, step.sensorSamplingFreq)
+	}
+
+	@Test
 	fun `il vecchio calib_id inventato si scarta`() {
 		assertNull(listener.store(message("calib-1-1-20260422T175123")))
 	}

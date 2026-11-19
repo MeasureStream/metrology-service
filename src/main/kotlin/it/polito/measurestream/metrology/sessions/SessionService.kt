@@ -345,15 +345,15 @@ class CalibrationStepsListener(
 			log.warn("Sessione {}: il sensore {} non fa parte della sessione, gradino scartato", sessionId, sensorIndex)
 			return null
 		}
-		val stepIndex = root.path("step_index").asInt(0)
+		val stepIndex = number(root.path("step_index"))?.toInt() ?: 0
 		if (steps.existsBySessionIdAndPhaseAndStepIndexAndSensorIndex(sessionId, phase, stepIndex, sensorIndex)) {
 			log.info("Sessione {}: gradino {} {} del sensore {} gia' ricevuto, duplicato ignorato", sessionId, phase, stepIndex, sensorIndex)
 			return null
 		}
 
-		val summary = root.path("step_summary")
-		val minutes = summary.takeIf { it.isArray && stepIndex < it.size() }?.get(stepIndex)?.path("minutes")?.asInt()
-		val readings = elements(root.path("ref_readings")).map { it.asDouble() }
+		val summary = array(root.path("step_summary"))
+		val minutes = summary.takeIf { it.isArray && stepIndex < it.size() }?.get(stepIndex)?.path("minutes")?.let { number(it)?.toInt() }
+		val readings = elements(array(root.path("ref_readings"))).mapNotNull { number(it) }
 		val samples = decodeSamples(root.path("sensor_b64").asString(""))
 
 		val step =
@@ -363,12 +363,12 @@ class CalibrationStepsListener(
 					phase = phase,
 					stepIndex = stepIndex,
 					sensorIndex = sensorIndex,
-					setpoint = root.path("target").takeIf { it.isNumber }?.asDouble(),
+					setpoint = number(root.path("target")),
 					minutes = minutes,
 					totalSteps = summary.takeIf { it.isArray }?.size(),
 					startedAt = time(root.path("start_time").asString("")),
 					dwellStartedAt = time(root.path("start_time_dwell").asString("")),
-					sensorSamplingFreq = root.path("sensor_sampling_freq").takeIf { it.isNumber }?.asInt(),
+					sensorSamplingFreq = number(root.path("sensor_sampling_freq"))?.toInt(),
 					referenceReadings = readings,
 					sensorSamples = samples,
 					stable = root.path("stable").takeIf { it.isBoolean }?.asBoolean(),
@@ -376,6 +376,30 @@ class CalibrationStepsListener(
 			)
 		log.info("Sessione {}: gradino {} {} del sensore {} ({} letture, {} campioni)", sessionId, phase, stepIndex, sensorIndex, readings.size, samples.size)
 		return step
+	}
+
+	/**
+	 * Un numero, anche scritto come stringa: il programma di oggi del Raspberry manda `"target": "-20.0"`
+	 * e `"step_index": "0"`. Il formato nuovo usa numeri veri (Docs/Campione_viaggiante.md).
+	 */
+	private fun number(node: JsonNode?): Double? =
+		when {
+			node == null || node.isMissingNode || node.isNull -> null
+			node.isNumber -> node.asDouble()
+			node.isString -> node.asString().trim().toDoubleOrNull()
+			else -> null
+		}
+
+	/**
+	 * Un array, anche scritto come stringa: il programma di oggi manda le liste come testo Python
+	 * (`"[-20.01, -20.02]"`, `"[{'target': -20.0, 'minutes': 1}]"`). Le virgolette singole
+	 * diventano doppie: i valori sono numeri e chiavi, senza apostrofi.
+	 */
+	private fun array(node: JsonNode): JsonNode {
+		if (node.isArray || !node.isString) return node
+		val text = node.asString().trim()
+		if (!text.startsWith("[")) return node
+		return runCatching { ContractJson.mapper.readTree(text.replace('\'', '"')) }.getOrDefault(node)
 	}
 
 	/** Gli elementi di un array JSON; vuoto se il nodo non e' un array. */
