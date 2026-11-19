@@ -52,6 +52,18 @@ class AccessPolicy(
 	 */
 	fun isStaff(caller: Caller = caller()): Boolean = caller.isAdmin || (!caller.isLab && metrologyRoles(caller.sub).isNotEmpty())
 
+	/**
+	 * Il messaggio per una MU che sensor-manager non restituisce: non esiste, o chi chiama non la
+	 * vede. sensor-manager mostra tutte le MU solo all'amministratore e al personale con il ruolo
+	 * di accesso `app-staff`; agli altri solo le proprie. Al personale senza quel ruolo lo si
+	 * dice, perche' altrimenti il caso si scambia per un EUID sbagliato.
+	 */
+	fun invisibleMu(euid: Long, caller: Caller = caller()): String {
+		val base = "MU 0x%08X non trovata fra quelle visibili a questo utente".format(euid)
+		val staffWithoutAccess = !caller.isAdmin && !caller.hasStaffAccess && isStaff(caller)
+		return if (staffWithoutAccess) "$base: per vedere le MU dei clienti serve il ruolo Keycloak ${Roles.STAFF}" else base
+	}
+
 	fun requireAdmin(caller: Caller = caller()) {
 		if (!caller.isAdmin) throw Forbidden("Operazione riservata agli amministratori")
 	}

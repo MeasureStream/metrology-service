@@ -17,6 +17,9 @@ data class Caller(
 	val isAdmin: Boolean get() = Roles.PREFIX + Roles.ADMIN in authorities
 	val isLab: Boolean get() = Roles.PREFIX + Roles.LAB in authorities
 	val isEngine: Boolean get() = Roles.PREFIX + Roles.CALIBRATION_ENGINE in authorities
+
+	/** Ha il ruolo di accesso `app-staff`: sensor-manager gli mostra tutte le MU. */
+	val hasStaffAccess: Boolean get() = Roles.PREFIX + Roles.STAFF in authorities
 }
 
 @Component

@@ -137,7 +137,7 @@ class SessionService(
 		val referenceCertificate = reference.currentCertificateId?.let { certificates.findById(it).orElse(null) }
 		references.usability(reference, referenceCertificate)?.let { throw Conflict("Campione ${reference.serialNumber}: $it") }
 
-		val mu = sensorManager.measurementUnit(request.muExtendedId) ?: throw NotFound("MU 0x%08X non trovata".format(request.muExtendedId))
+		val mu = sensorManager.measurementUnit(request.muExtendedId) ?: throw NotFound(policy.invisibleMu(request.muExtendedId, caller))
 		val indexes = request.sensorIndexes.ifEmpty { mu.sensors.map { it.sensorIndex } }
 		if (indexes.isEmpty()) throw BadRequest("La MU non ha sensori da tarare")
 		val sessionItems = indexes.distinct().map { items.resolveOrCreate(request.muExtendedId, it) }

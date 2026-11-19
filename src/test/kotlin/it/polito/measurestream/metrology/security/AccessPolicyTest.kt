@@ -76,6 +76,19 @@ class AccessPolicyTest {
 	}
 
 	@Test
+	fun `al tecnico senza app-staff si dice quale ruolo manca per vedere la MU`() {
+		roles.save(MetrologyRole(userSub = "anna", role = MetrologyRoleType.TECHNICIAN, validFrom = since, grantedBy = "admin"))
+		login("anna", Roles.USER)
+		assertTrue(Roles.STAFF in policy.invisibleMu(0x10001, policy.caller()), "il tecnico senza il ruolo di accesso")
+
+		login("anna", Roles.USER, Roles.STAFF)
+		assertFalse(Roles.STAFF in policy.invisibleMu(0x10001, policy.caller()), "con il ruolo la MU manca davvero")
+
+		login("cliente", Roles.USER)
+		assertFalse(Roles.STAFF in policy.invisibleMu(0x10001, policy.caller()), "a un cliente il ruolo del personale non serve")
+	}
+
+	@Test
 	fun `il personale interno resta personale`() {
 		roles.save(MetrologyRole(userSub = "anna", role = MetrologyRoleType.TECHNICIAN, validFrom = since, grantedBy = "admin"))
 		login("anna", Roles.USER)

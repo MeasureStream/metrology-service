@@ -89,7 +89,7 @@ class ItemService(
 		val caller = policy.caller()
 		val mu =
 			sensorManager.measurementUnit(muExtendedId)
-				?: throw Forbidden("La MU 0x%08X non risulta fra quelle visibili a questo utente".format(muExtendedId))
+				?: throw Forbidden(policy.invisibleMu(muExtendedId, caller))
 		val sensor =
 			mu.sensors.firstOrNull { it.sensorIndex == sensorIndex }
 				?: throw BadRequest("La MU 0x%08X non ha un sensore con indice %d".format(muExtendedId, sensorIndex))

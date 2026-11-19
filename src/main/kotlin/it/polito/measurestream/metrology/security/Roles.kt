@@ -17,6 +17,13 @@ object Roles {
 	/** Utente di un laboratorio esterno: inserisce i dati dei certificati degli esemplari assegnati. */
 	const val LAB = "app-lab"
 
+	/**
+	 * Personale del laboratorio interno: in sensor-manager legge l'anagrafica di tutte le MU, che
+	 * serve per aprire sessioni e registrare verifiche su quelle dei clienti. Qui non da' alcun
+	 * potere: cosa puo' fare il personale lo dicono i ruoli metrologici.
+	 */
+	const val STAFF = "app-staff"
+
 	/** L'account di servizio del motore di taratura (client credentials). */
 	const val CALIBRATION_ENGINE = "CALIBRATION_ENGINE"
 
