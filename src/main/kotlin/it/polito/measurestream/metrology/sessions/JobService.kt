@@ -211,6 +211,14 @@ class JobService(
 		certificate.fingerprint = certificateService.fingerprint(certificate)
 		certificates.save(certificate)
 		audit.record("CERTIFICATE_FUNCTION_FITTED", "certificate", certificate.id, detail = mapOf("resultId" to record.id, "jobId" to job.id.toString()), userSub = "calibration-engine")
+		// Un DCC firmato da un laboratorio riconosciuto aspettava solo la funzione (passo 5.4).
+		certificate.autoVerifyReason?.let { reason ->
+			certificate.status = CertificateStatus.VERIFIED
+			certificate.verifiedBy = "dcc-signature"
+			certificate.verifiedAt = OffsetDateTime.now()
+			certificates.save(certificate)
+			audit.record("CERTIFICATE_VERIFIED_BY_SIGNATURE", "certificate", certificate.id, detail = mapOf("reason" to reason), userSub = "calibration-engine")
+		}
 	}
 
 	/**

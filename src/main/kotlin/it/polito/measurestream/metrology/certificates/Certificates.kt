@@ -100,6 +100,8 @@ class Certificate(
 	@Column(name = "invalidated_by", length = 64) var invalidatedBy: String? = null,
 	@Column(name = "invalidated_at") var invalidatedAt: OffsetDateTime? = null,
 	@Column(name = "invalidation_reason", columnDefinition = "text") var invalidationReason: String? = null,
+	/** DCC firmato da un laboratorio riconosciuto: diventa verificato appena CERT_FIT da' la funzione (V11). */
+	@Column(name = "auto_verify_reason", length = 300) var autoVerifyReason: String? = null,
 	@OneToMany(mappedBy = "certificate", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
 	@OrderBy("phase ASC, pointIndex ASC")
 	var points: MutableList<CertificatePoint> = mutableListOf(),

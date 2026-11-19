@@ -134,6 +134,12 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 	NonconformityService::class,
 	Notifier::class,
 	it.polito.measurestream.metrology.sessions.CertFitTrigger::class,
+	it.polito.measurestream.metrology.certificates.DccImportService::class,
+	it.polito.measurestream.metrology.reports.ReportService::class,
+	it.polito.measurestream.metrology.control.ControlPointService::class,
+	it.polito.measurestream.metrology.control.HistoricClimateService::class,
+	it.polito.measurestream.metrology.control.ExcursionService::class,
+	it.polito.measurestream.metrology.control.ScheduleService::class,
 )
 class AcceptanceCriteriaTest {
 	companion object {
@@ -168,6 +174,10 @@ class AcceptanceCriteriaTest {
 	@Autowired lateinit var engine: EngineController
 	@Autowired lateinit var nonconformityRepository: NonconformityRepository
 	@Autowired lateinit var jobRecords: it.polito.measurestream.metrology.sessions.CalibrationJobRepository
+	@Autowired lateinit var dccImport: it.polito.measurestream.metrology.certificates.DccImportService
+	@Autowired lateinit var reports: it.polito.measurestream.metrology.reports.ReportService
+	@Autowired lateinit var signing: SigningService
+	@Autowired lateinit var documentRepository: it.polito.measurestream.metrology.documents.DocumentRepository
 
 	private val euid = 439041101L
 
@@ -540,6 +550,65 @@ class AcceptanceCriteriaTest {
 		assertNotNull(fitted.function, "la funzione e' entrata nel certificato ancora trascritto")
 		assertEquals(CertificateStatus.ENTERED, fitted.status)
 		assertNotNull(fitted.fingerprint)
+	}
+
+	/* ------------------------------------------------- passo 5.4: import del DCC esterno */
+
+	private fun referenceForDcc(): ReferenceStandard {
+		login("anna", Roles.USER)
+		return referenceRepository.save(ReferenceStandard(name = "Termometro di riferimento", serialNumber = "REF-SN-77", createdBy = "anna"))
+	}
+
+	@Test
+	fun `5_4 un DCC firmato da un laboratorio riconosciuto salta direttamente a verificato`() {
+		val reference = referenceForDcc()
+		val signed = signing.signXmlBytes(it.polito.measurestream.metrology.certificates.DccParserTest.dcc().toByteArray())
+
+		val preview = dccImport.preview(signed, "lab.xml")
+		assertEquals(Verdict.AUTHENTIC, preview.signature)
+		assertTrue(preview.recognized, "il laboratorio interno e' riconosciuto per costruzione")
+		assertEquals(reference.id, preview.candidates.single().subjectId, "abbinato per numero di serie")
+
+		val imported = dccImport.import(signed, "lab.xml", SubjectRef(referenceId = reference.id))
+		assertEquals(CertificateStatus.VERIFIED, imported.status, "niente quattro occhi: la firma garantisce i dati")
+		assertEquals(3, certificateRepository.findById(imported.id).orElseThrow().points.count { it.phase.name == "AS_LEFT" })
+	}
+
+	@Test
+	fun `5_4 un DCC non firmato resta da verificare a quattro occhi`() {
+		val reference = referenceForDcc()
+		val unsigned = it.polito.measurestream.metrology.certificates.DccParserTest.dcc().toByteArray()
+		val imported = dccImport.import(unsigned, "lab.xml", SubjectRef(referenceId = reference.id))
+		assertEquals(CertificateStatus.ENTERED, imported.status)
+	}
+
+	/* ------------------------------------------------- passo 5.5: rapporti e pacchetto */
+
+	@Test
+	fun `5_5 il pacchetto per l'ispettore contiene il periodo, con le impronte di ogni file`() {
+		externalEffectiveCertificate("LAT-042-2026-0200")
+		em.flush()
+		login("bruno", Roles.USER)
+		val ref = reports.inspectorPackage(OffsetDateTime.now().minusDays(30), OffsetDateTime.now().plusDays(1))
+		val stored = documentRepository.findById(ref.documentId).orElseThrow()
+		assertEquals("INSPECTOR_PACKAGE", stored.kind)
+
+		val files = linkedMapOf<String, ByteArray>()
+		java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(stored.content)).use { zip ->
+			generateSequence { zip.nextEntry }.forEach { entry -> files[entry.name] = zip.readBytes() }
+		}
+		@Suppress("UNCHECKED_CAST")
+		val manifest = it.polito.measurestream.metrology.jobs.contract.ContractJson.mapper.readValue(files.getValue("manifest.json"), Map::class.java) as Map<String, Any?>
+		@Suppress("UNCHECKED_CAST")
+		val listed = (manifest["files"] as List<Map<String, Any?>>).associate { it["path"] as String to it["sha256"] as String }
+		assertTrue("stato-flotta.pdf" in listed && "registro-audit.csv" in listed && "verifiche-intermedie.csv" in listed)
+		assertTrue(listed.keys.any { it.startsWith("certificati/lat-042-2026-0200-rev1/") && it.endsWith("certificato.json") }, listed.keys.toString())
+		for ((path, sha) in listed) {
+			val digest = java.security.MessageDigest.getInstance("SHA-256").digest(files.getValue(path)).joinToString("") { "%02x".format(it) }
+			assertEquals(sha, digest, "impronta di $path")
+		}
+		assertTrue(String(files.getValue("stato-flotta.pdf").copyOfRange(0, 4)) == "%PDF")
+		assertTrue(String(files.getValue("registro-audit.csv")).contains("CERTIFICATE_EFFECTIVE"))
 	}
 
 	/* ------------------------------------------------------------------ supporto */

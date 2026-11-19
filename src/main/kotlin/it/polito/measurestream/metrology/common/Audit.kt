@@ -37,6 +37,9 @@ class AuditLog(
 
 interface AuditLogRepository : JpaRepository<AuditLog, Long> {
 	fun findByEntityAndEntityIdOrderByAtAsc(entity: String, entityId: Long): List<AuditLog>
+
+	/** Il registro di un periodo, per il pacchetto dell'ispettore (passo 5.5). */
+	fun findAllByAtBetweenOrderByAtAsc(from: java.time.OffsetDateTime, to: java.time.OffsetDateTime): List<AuditLog>
 }
 
 /**
