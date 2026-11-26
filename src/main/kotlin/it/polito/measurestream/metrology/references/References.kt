@@ -3,11 +3,16 @@ package it.polito.measurestream.metrology.references
 import it.polito.measurestream.metrology.certificates.Certificate
 import it.polito.measurestream.metrology.certificates.CertificateRepository
 import it.polito.measurestream.metrology.certificates.CertificateStatus
+import it.polito.measurestream.metrology.certificates.SubjectType
 import it.polito.measurestream.metrology.common.AuditService
 import it.polito.measurestream.metrology.common.BadRequest
+import it.polito.measurestream.metrology.common.Conflict
 import it.polito.measurestream.metrology.common.Forbidden
 import it.polito.measurestream.metrology.common.NotFound
+import it.polito.measurestream.metrology.control.IntermediateCheckRepository
+import it.polito.measurestream.metrology.control.ScheduleItemRepository
 import it.polito.measurestream.metrology.security.AccessPolicy
+import it.polito.measurestream.metrology.sessions.CalibrationSessionRepository
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -18,8 +23,10 @@ import jakarta.persistence.Id
 import jakarta.persistence.Table
 import java.time.OffsetDateTime
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -27,6 +34,7 @@ import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 enum class ReferenceStatus { IN_SERVICE, IN_CALIBRATION, RETIRED }
@@ -99,6 +107,9 @@ data class ReferenceDTO(
 class ReferenceService(
 	private val repository: ReferenceStandardRepository,
 	private val certificates: CertificateRepository,
+	private val sessions: CalibrationSessionRepository,
+	private val checks: IntermediateCheckRepository,
+	private val schedule: ScheduleItemRepository,
 	private val policy: AccessPolicy,
 	private val audit: AuditService,
 ) {
@@ -187,6 +198,14 @@ class ReferenceService(
 		requireStaff()
 		val reference = get(id)
 		val before = toDTO(reference)
+		// Il numero di serie identifica l'oggetto fisico a cui rimandano i certificati: si
+		// corregge solo in rodaggio, e solo dall'amministratore.
+		val serial = request.serialNumber.trim()
+		if (serial.isNotEmpty() && serial != reference.serialNumber) {
+			policy.requireRunInAdmin("Cambiare il numero di serie di un campione")
+			if (repository.findBySerialNumber(serial) != null) throw BadRequest("Esiste gia' un campione con numero di serie $serial")
+			reference.serialNumber = serial
+		}
 		reference.name = request.name.ifBlank { reference.name }
 		reference.manufacturer = request.manufacturer
 		reference.model = request.model
@@ -197,6 +216,26 @@ class ReferenceService(
 		reference.notes = request.notes
 		audit.record("REFERENCE_UPDATED", "reference_standard", id, before = before, after = request)
 		return toDTO(repository.save(reference))
+	}
+
+	/**
+	 * Un campione creato per errore o per prova si cancella, se non ha lasciato tracce: nessun
+	 * certificato, nessuna sessione, nessuna verifica intermedia. Uno usato si ritira (RETIRED),
+	 * perche' chi e' stato tarato con lui deve poterlo ritrovare.
+	 */
+	@Transactional
+	fun delete(id: Long) {
+		policy.requireAdmin()
+		val reference = get(id)
+		val serial = reference.serialNumber
+		if (certificates.findAllBySubjectTypeAndSubjectIdOrderByCreatedAtDesc(SubjectType.REFERENCE, id).isNotEmpty()) {
+			throw Conflict("Il campione $serial ha dei certificati: non si cancella, si ritira")
+		}
+		if (sessions.existsByReferenceStandardId(id)) throw Conflict("Il campione $serial e' stato usato in una sessione di taratura: non si cancella, si ritira")
+		if (checks.existsByReferenceStandardId(id)) throw Conflict("Il campione $serial e' stato usato in una verifica intermedia: non si cancella, si ritira")
+		schedule.deleteAll(schedule.findAllBySubjectTypeAndSubjectId(SubjectType.REFERENCE, id))
+		audit.record("REFERENCE_DELETED", "reference_standard", id, before = toDTO(reference))
+		repository.delete(reference)
 	}
 
 	private fun requireStaff() =
@@ -220,4 +259,8 @@ class ReferenceController(private val service: ReferenceService) {
 
 	@PutMapping("/{id}")
 	fun update(@PathVariable id: Long, @RequestBody request: ReferenceRequest): ReferenceDTO = service.update(id, request)
+
+	@DeleteMapping("/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	fun delete(@PathVariable id: Long) = service.delete(id)
 }

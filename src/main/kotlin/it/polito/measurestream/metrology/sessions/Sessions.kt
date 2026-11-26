@@ -79,6 +79,8 @@ interface CalibrationSessionRepository : JpaRepository<CalibrationSession, Long>
 	fun findAllByMuExtendedIdOrderByStartedAtDesc(muExtendedId: Long): List<CalibrationSession>
 
 	fun findAllByStatusIn(statuses: Collection<SessionStatus>): List<CalibrationSession>
+
+	fun existsByReferenceStandardId(referenceStandardId: Long): Boolean
 }
 
 interface SessionStepRepository : JpaRepository<SessionStep, Long> {

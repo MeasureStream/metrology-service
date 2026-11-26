@@ -2,6 +2,7 @@ package it.polito.measurestream.metrology.admin
 
 import it.polito.measurestream.metrology.common.AuditService
 import it.polito.measurestream.metrology.common.BadRequest
+import it.polito.measurestream.metrology.common.Conflict
 import it.polito.measurestream.metrology.common.NotFound
 import it.polito.measurestream.metrology.companies.ClientCompany
 import it.polito.measurestream.metrology.companies.ClientCompanyMember
@@ -16,6 +17,8 @@ import it.polito.measurestream.metrology.security.MetrologyRoleType
 import it.polito.measurestream.metrology.signing.SigningService
 import java.time.LocalDate
 import java.time.OffsetDateTime
+import org.springframework.dao.DataIntegrityViolationException
+import org.springframework.http.HttpStatus
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
@@ -24,6 +27,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 data class CompanyRequest(
@@ -103,6 +107,11 @@ data class MetrologyProfileDTO(
 	val signingAvailable: Boolean,
 	/** Vero se la chiave di firma e' quella di sviluppo: l'interfaccia lo deve dire. */
 	val signingDevOnly: Boolean,
+	/**
+	 * Modalita' rodaggio accesa: l'amministratore vede i pulsanti per correggere e cancellare
+	 * cio' che in esercizio resta immutabile, e l'interfaccia ricorda che va spenta.
+	 */
+	val runIn: Boolean = false,
 )
 
 fun MetrologyRole.toDTO() = RoleDTO(id, userSub, displayName, role, validFrom, validTo, labCompanyId, grantedBy, validAt(LocalDate.now()))
@@ -143,6 +152,7 @@ class AdminController(
 			canOpenSessions = policy.has(caller, MetrologyRoleType.TECHNICIAN),
 			signingAvailable = signing.available(),
 			signingDevOnly = signing.devOnly(),
+			runIn = policy.runIn,
 		)
 	}
 
@@ -190,6 +200,24 @@ class AdminController(
 		return company.toDTO(members.findAllByCompanyId(id))
 	}
 
+	/**
+	 * Un'azienda inserita per errore si cancella finche' nessuno la usa: niente membri, niente
+	 * punti di controllo. Il vincolo del database ferma comunque ogni altro riferimento.
+	 */
+	@DeleteMapping("/companies/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	@Transactional
+	fun deleteCompany(@PathVariable id: Long) {
+		policy.requireAdmin()
+		val company = companies.findById(id).orElseThrow { NotFound("Azienda $id non trovata") }
+		if (members.findAllByCompanyId(id).isNotEmpty()) throw Conflict("L'azienda ${company.name} ha dei membri: vanno tolti prima di cancellarla")
+		audit.record("COMPANY_DELETED", "client_company", id, before = company.toDTO(emptyList()))
+		deleteOrExplain("L'azienda ${company.name} e' gia' usata da un punto di controllo: non si cancella") {
+			companies.delete(company)
+			companies.flush()
+		}
+	}
+
 	@DeleteMapping("/companies/{id}/members/{sub}")
 	@Transactional
 	fun removeMember(@PathVariable id: Long, @PathVariable sub: String): CompanyDTO {
@@ -223,6 +251,24 @@ class AdminController(
 		lab.apply(request)
 		audit.record("LAB_UPDATED", "lab_company", id, after = request)
 		return labs.save(lab)
+	}
+
+	/**
+	 * Un laboratorio inserito per errore si cancella finche' nessuno lo usa: niente ruoli, niente
+	 * esemplari affidati, niente certificati. Il laboratorio interno non si cancella mai.
+	 */
+	@DeleteMapping("/labs/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	@Transactional
+	fun deleteLab(@PathVariable id: Long) {
+		policy.requireAdmin()
+		val lab = labs.findById(id).orElseThrow { NotFound("Laboratorio $id non trovato") }
+		if (lab.internal) throw Conflict("Il laboratorio interno non si cancella")
+		audit.record("LAB_DELETED", "lab_company", id, detail = mapOf("name" to lab.name, "accreditationNumber" to lab.accreditationNumber))
+		deleteOrExplain("Il laboratorio ${lab.name} e' gia' usato da ruoli, esemplari affidati o certificati: non si cancella") {
+			labs.delete(lab)
+			labs.flush()
+		}
 	}
 
 	/* ------------------------------------------------------- ruoli metrologici */
@@ -268,6 +314,52 @@ class AdminController(
 		role.validTo = if (yesterday.isBefore(role.validFrom)) role.validFrom else yesterday
 		audit.record("ROLE_ENDED", "metrology_role", id, detail = mapOf("validTo" to role.validTo.toString()))
 		return roles.save(role).toDTO()
+	}
+
+	/**
+	 * In rodaggio un ruolo si corregge: l'utente sbagliato, la data sbagliata, il ruolo sbagliato.
+	 * In esercizio no, si chiude e se ne concede uno nuovo; il registro tiene il prima e il dopo.
+	 */
+	@PutMapping("/roles/{id}")
+	@Transactional
+	fun correctRole(@PathVariable id: Long, @RequestBody request: RoleRequest): RoleDTO {
+		policy.requireRunInAdmin("Correggere un ruolo")
+		val role = roles.findById(id).orElseThrow { NotFound("Ruolo $id non trovato") }
+		if (request.userSub.isBlank()) throw BadRequest("Serve l'identificativo Keycloak dell'utente")
+		val from = request.validFrom ?: role.validFrom
+		if (request.validTo != null && request.validTo.isBefore(from)) throw BadRequest("La fine della validita' precede l'inizio")
+		val before = role.toDTO()
+		role.userSub = request.userSub.trim()
+		role.displayName = request.displayName
+		role.role = request.role
+		role.validFrom = from
+		role.validTo = request.validTo
+		role.labCompanyId = request.labCompanyId
+		audit.record("ROLE_CORRECTED", "metrology_role", id, before = before, after = request)
+		return roles.save(role).toDTO()
+	}
+
+	/** In rodaggio un ruolo dato per errore si cancella; in esercizio si chiude con [end]. */
+	@DeleteMapping("/roles/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	@Transactional
+	fun deleteRole(@PathVariable id: Long) {
+		policy.requireRunInAdmin("Cancellare un ruolo")
+		val role = roles.findById(id).orElseThrow { NotFound("Ruolo $id non trovato") }
+		audit.record("ROLE_DELETED", "metrology_role", id, before = role.toDTO())
+		roles.delete(role)
+	}
+
+	/**
+	 * Cancella, e se il database rifiuta per un riferimento ancora vivo lo dice in chiaro invece
+	 * del messaggio del vincolo. La transazione si annulla, riga del registro compresa.
+	 */
+	private fun deleteOrExplain(message: String, work: () -> Unit) {
+		try {
+			work()
+		} catch (e: DataIntegrityViolationException) {
+			throw Conflict(message)
+		}
 	}
 
 	private fun ClientCompany.apply(r: CompanyRequest) {

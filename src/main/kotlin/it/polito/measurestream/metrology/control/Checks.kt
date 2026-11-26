@@ -32,14 +32,17 @@ import kotlin.math.sqrt
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 /* ------------------------------------------------------------------- verifiche intermedie */
@@ -76,6 +79,8 @@ interface IntermediateCheckRepository : JpaRepository<IntermediateCheck, Long> {
 	fun findAllByCalibratedItemIdOrderByCheckedAtAsc(itemId: Long): List<IntermediateCheck>
 
 	fun findTopByCalibratedItemIdOrderByCheckedAtDesc(itemId: Long): IntermediateCheck?
+
+	fun existsByReferenceStandardId(referenceStandardId: Long): Boolean
 }
 
 data class CheckRequest(
@@ -209,6 +214,34 @@ class CheckService(
 	fun list(itemId: Long): List<IntermediateCheck> {
 		items.get(itemId)
 		return checks.findAllByCalibratedItemIdOrderByCheckedAtAsc(itemId)
+	}
+
+	/**
+	 * In rodaggio una verifica scritta male si cancella e si riscrive. Se aveva aperto una non
+	 * conformita', quella resta: la chiude chi la gestisce, con la sua decisione. In esercizio
+	 * una verifica non si cancella: l'errore si corregge con una verifica nuova e una nota.
+	 */
+	@Transactional
+	fun delete(id: Long) {
+		policy.requireRunInAdmin("Cancellare una verifica intermedia")
+		val check = checks.findById(id).orElseThrow { NotFound("Verifica $id non trovata") }
+		audit.record(
+			"INTERMEDIATE_CHECK_DELETED",
+			"calibrated_item",
+			check.calibratedItemId,
+			detail =
+				mapOf(
+					"checkId" to id,
+					"checkedAt" to check.checkedAt.toString(),
+					"referenceValue" to check.referenceValue,
+					"indicatedValue" to check.indicatedValue,
+					"verdict" to check.verdict.name,
+					"nonconformityId" to check.nonconformityId,
+				),
+		)
+		checks.delete(check)
+		checks.flush()
+		schedule.ifAvailable?.recompute(SubjectType.ITEM, check.calibratedItemId)
 	}
 }
 
@@ -477,6 +510,10 @@ class CheckController(
 	@PostMapping("/checks") fun record(@RequestBody request: CheckRequest) = checks.record(request)
 
 	@GetMapping("/checks") fun list(@RequestParam itemId: Long) = checks.list(itemId)
+
+	@DeleteMapping("/checks/{id}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	fun delete(@PathVariable id: Long) = checks.delete(id)
 
 	@GetMapping("/items/{id}/control-chart") fun chart(@PathVariable id: Long) = charts.chart(id)
 

@@ -52,7 +52,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
  * La fase 4 del piano: punti di controllo, conformita' con la banda di guardia, escursioni e
  * non conformita', scadenzario. Ogni caso porta il numero del passo nel nome.
  */
-@DataJpaTest(properties = ["metrology.notifications.lab-email=laboratorio@example.test"])
+@DataJpaTest(properties = ["metrology.notifications.lab-email=laboratorio@example.test", "metrology.run-in=true"])
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import(
 	CurrentUser::class,
@@ -300,6 +300,19 @@ class ControlPointsTest {
 		assertEquals(CheckVerdict.FAIL, failed.verdict)
 		val nc = nonconformities.findById(failed.nonconformityId!!).orElseThrow()
 		assertEquals(NonconformityType.INSTRUMENT, nc.type)
+	}
+
+	@Test
+	fun `rodaggio - l'amministratore cancella una verifica scritta male, la non conformita' resta`() {
+		val point = cell()
+		service.assign(point.id, AssignRequest(cellA, 0, from = t0))
+		val failed = checks.record(CheckRequest(cellA, 0, referenceValue = -18.4, referenceU = 0.1, indicatedValue = -17.7, indicatedU = 0.1))
+		assertThrows<it.polito.measurestream.metrology.common.Forbidden> { checks.delete(failed.id) }
+
+		login("amministratore", Roles.ADMIN)
+		checks.delete(failed.id)
+		assertTrue(checks.list(failed.calibratedItemId).none { it.id == failed.id })
+		assertTrue(nonconformities.findById(failed.nonconformityId!!).isPresent, "la non conformita' la chiude chi la gestisce")
 	}
 
 	@Test

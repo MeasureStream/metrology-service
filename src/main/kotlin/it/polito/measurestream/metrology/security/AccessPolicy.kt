@@ -1,10 +1,12 @@
 package it.polito.measurestream.metrology.security
 
 import it.polito.measurestream.metrology.common.Caller
+import it.polito.measurestream.metrology.common.Conflict
 import it.polito.measurestream.metrology.common.CurrentUser
 import it.polito.measurestream.metrology.common.Forbidden
 import it.polito.measurestream.metrology.companies.ClientCompanyMemberRepository
 import java.time.LocalDate
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 
 /**
@@ -19,6 +21,11 @@ class AccessPolicy(
 	private val currentUser: CurrentUser,
 	private val roles: MetrologyRoleRepository,
 	private val members: ClientCompanyMemberRepository,
+	/**
+	 * Modalita' rodaggio (`METROLOGY_RUN_IN`): finche' il laboratorio prova il sistema,
+	 * l'amministratore puo' correggere e cancellare cio' che in esercizio resta immutabile.
+	 */
+	@Value("\${metrology.run-in:false}") val runIn: Boolean = false,
 ) {
 	fun caller(): Caller = currentUser.get()
 
@@ -66,6 +73,16 @@ class AccessPolicy(
 
 	fun requireAdmin(caller: Caller = caller()) {
 		if (!caller.isAdmin) throw Forbidden("Operazione riservata agli amministratori")
+	}
+
+	/**
+	 * Le correzioni del rodaggio: solo l'amministratore, e solo finche' la modalita' e' accesa.
+	 * In esercizio quello che e' stato registrato non si riscrive: si chiude, si revoca o si
+	 * corregge con una revisione. In entrambi i casi il registro delle azioni dice chi e cosa.
+	 */
+	fun requireRunInAdmin(what: String, caller: Caller = caller()) {
+		requireAdmin(caller)
+		if (!runIn) throw Conflict("$what e' possibile solo in modalita' rodaggio (METROLOGY_RUN_IN)")
 	}
 
 	fun requireRole(caller: Caller, vararg wanted: MetrologyRoleType, what: String) {

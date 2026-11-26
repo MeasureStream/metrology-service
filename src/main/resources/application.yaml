@@ -53,6 +53,10 @@ server:
   port: 8080
 
 metrology:
+  # Rodaggio: l'amministratore puo' correggere e cancellare i ruoli metrologici, le verifiche
+  # intermedie e il numero di serie di un campione, che in esercizio restano immutabili. Va
+  # spento prima di emettere certificati veri; ogni correzione resta comunque nel registro.
+  run-in: ${METROLOGY_RUN_IN:false}
   # sensor-manager risponde a chi possiede una MU: il servizio gli inoltra il token di chi
   # chiama, e cosi' la proprieta' la decide il servizio che la conosce.
   sensor-manager:
